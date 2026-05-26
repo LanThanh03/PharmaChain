@@ -1,17 +1,22 @@
-# doantotnghiepbc
+---
+title: PharmaChain
+emoji: 💊
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
 
-A new Flutter project.
+# PharmaChain - Blockchain-based Drug Supply Chain System
 
-## Getting Started
+Hệ thống tích hợp công nghệ Blockchain giúp giám sát, kiểm định chất lượng thuốc và tối ưu hóa quy trình phân phối dược phẩm thời gian thực.
 
-This project is a starting point for a Flutter application.
+## Các Portal tích hợp trong hệ thống:
+1. **Nhà Sản Xuất (/nsx/):** Quản lý lô sản xuất, cấp Merkle Proof và xuất hàng cho NPP.
+2. **Nhà Phân Phối (/npp/):** Xác thực nguồn gốc, nhập kho và xuất hàng cho Hiệu Thuốc.
+3. **Hiệu Thuốc (/ht/):** Quản lý kho dược phẩm, kê đơn và bán thuốc online.
+4. **Quản Trị Viên (/admin/):** Kiểm soát tài khoản, smart contract và lịch sử chuỗi cung ứng.
 
-A few resources to get you started if this is your first Flutter project:
-
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+---
+*Phát triển bởi Antigravity AI Assistant cho tài khoản thanh141203.*
