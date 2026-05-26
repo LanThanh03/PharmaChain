@@ -29,8 +29,7 @@ COPY . .
 
 # 6. Thiết lập và khởi chạy MySQL (MariaDB) trong lúc build để import dữ liệu mẫu
 RUN service mariadb start && \
-    mysql -u root -e "CREATE DATABASE IF NOT EXISTS BlockChain_DA CHARACTER SET utf8 COLLATE utf8_general_ci;" && \
-    mysql -u root BlockChain_DA < "blockchain_da FULL.sql" && \
+    mysql -u root < "blockchain_da FULL.sql" && \
     mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'rootpassword'; FLUSH PRIVILEGES;"
 
 # 7. Cấu hình .env và Build 4 React Frontends statically
