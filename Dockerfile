@@ -27,10 +27,7 @@ WORKDIR /app
 # 5. Copy toàn bộ dự án vào Docker
 COPY . .
 
-# 6. Thiết lập và khởi chạy MySQL (MariaDB) trong lúc build để import dữ liệu mẫu
-RUN service mariadb start && \
-    mysql -u root < "blockchain_da FULL.sql" && \
-    mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'rootpassword'; FLUSH PRIVILEGES;"
+# 6. Database MariaDB will be initialized at runtime in entrypoint.sh to avoid Docker build sandbox restrictions.
 
 # 7. Cấu hình .env và Build 4 React Frontends statically
 # Chúng ta build statically với PUBLIC_URL tương ứng để Nginx phân phối trực tiếp

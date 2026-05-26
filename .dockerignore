@@ -1,0 +1,20 @@
+# Exclude all node_modules to keep build context tiny
+**/node_modules/
+
+# Exclude build artifacts
+**/build/
+**/target/
+**/dist/
+.git/
+.github/
+.vscode/
+.idea/
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Ignore local dev databases and temp files
+blockchain_da_latest.sql
+*.log
+backend/uploads/

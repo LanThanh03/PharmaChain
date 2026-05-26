@@ -13,6 +13,16 @@ until mysqladmin ping -u root --silent; do
 done
 echo "✅ Database MariaDB đã sẵn sàng!"
 
+# Khởi tạo và import dữ liệu nếu chưa có database
+if ! mysql -u root -e "use BlockChain_DA" 2>/dev/null; then
+    echo "📦 Đang import cơ sở dữ liệu mới nhất (521KB)..."
+    mysql -u root < "/app/blockchain_da FULL.sql"
+    mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'rootpassword'; FLUSH PRIVILEGES;"
+    echo "✅ Đã nạp Database BlockChain_DA thành công!"
+else
+    echo "ℹ️ Database BlockChain_DA đã tồn tại, bỏ qua bước import."
+fi
+
 # 2. Khởi chạy Backend Spring Boot
 echo "⏳ Đang khởi chạy Spring Boot Backend..."
 export SPRING_DATASOURCE_URL="jdbc:mysql://localhost:3306/BlockChain_DA?useSSL=false&serverTimezone=Asia/Ho_Chi_Minh"
