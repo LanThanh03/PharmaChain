@@ -21,7 +21,8 @@ mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'rootpassword'; FL
 if ! mysql -u root -p"rootpassword" -e "use BlockChain_DA" 2>/dev/null; then
     echo "📦 Tạo database và import dữ liệu mới nhất..."
     mysql -u root -p"rootpassword" -e "CREATE DATABASE IF NOT EXISTS BlockChain_DA CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
-    mysql -u root -p"rootpassword" BlockChain_DA < "/app/blockchain_da FULL.sql"
+    # SQL file đã được pre-process để tương thích MariaDB (không còn _binary syntax)
+    mysql --force -u root -p"rootpassword" BlockChain_DA < "/app/blockchain_da FULL.sql"
     echo "✅ Đã nạp Database BlockChain_DA thành công!"
 else
     echo "ℹ️ Database BlockChain_DA đã tồn tại, bỏ qua bước import."
