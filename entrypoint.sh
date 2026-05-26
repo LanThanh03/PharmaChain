@@ -35,10 +35,24 @@ export JAVA_OPTS="-XX:MaxRAMPercentage=75.0 -XX:ActiveProcessorCount=2 -Xms128m 
 
 cd /app/backend
 java $JAVA_OPTS -jar target/*.jar > /app/backend.log 2>&1 &
+JAVA_PID=$!
 
-echo "⌛ Đợi 5 giây cho Spring Boot ổn định..."
-sleep 5
-echo "✅ Spring Boot Backend đang chạy ngầm!"
+# Đợi Spring Boot thực sự sẵn sàng trên port 8080 (tối đa 120 giây)
+echo "⌛ Đang chờ Spring Boot khởi động hoàn toàn trên port 8080..."
+WAITED=0
+until curl -sf http://localhost:8080/actuator/health > /dev/null 2>&1 || \
+      curl -sf http://localhost:8080/api/manufacturer/auth/login -X POST > /dev/null 2>&1 || \
+      nc -z localhost 8080 2>/dev/null; do
+    if [ $WAITED -ge 120 ]; then
+        echo "⚠️ Spring Boot chưa sẵn sàng sau 120 giây, kiểm tra /app/backend.log:"
+        tail -n 30 /app/backend.log
+        break
+    fi
+    echo "⌛ Spring Boot chưa lên... đã đợi ${WAITED}s"
+    sleep 5
+    WAITED=$((WAITED + 5))
+done
+echo "✅ Spring Boot Backend đã sẵn sàng sau ${WAITED}s!"
 
 # 3. Khởi chạy Nginx ở chế độ foreground để giữ Container luôn sống
 echo "⏳ Khởi chạy Nginx Web Server..."
