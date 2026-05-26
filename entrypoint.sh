@@ -2,6 +2,18 @@
 
 echo "🚀 Bắt đầu khởi chạy hệ thống PharmaChain trên Hugging Face Spaces..."
 
+# Cấu hình MariaDB dùng ít RAM để tránh OOM trên free tier
+mkdir -p /etc/mysql/conf.d
+cat > /etc/mysql/conf.d/low-memory.cnf << 'MYCNF'
+[mysqld]
+innodb_buffer_pool_size = 64M
+innodb_log_file_size = 32M
+innodb_flush_method = O_DSYNC
+max_connections = 20
+table_open_cache = 64
+key_buffer_size = 8M
+MYCNF
+
 # 1. Khởi chạy MariaDB
 echo "⏳ Đang chạy Database MariaDB..."
 service mariadb start

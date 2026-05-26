@@ -33,9 +33,9 @@ const BatchProductManagement = () => {
         setLoading(true);
         setError(null);
         try {
-            const token = localStorage.getItem('authToken');
+            const token = localStorage.getItem('manufacturer_token');
             const response = await axios.get(
-                `${process.env.REACT_APP_API_BASE_URL || 'http://localhost:8080'}/api/batches/with-items`,
+                `${process.env.REACT_APP_API_BASE_URL || ''}/api/batches/with-items`,
                 {
                     headers: token ? { Authorization: `Bearer ${token}` } : {},
                 }
@@ -61,9 +61,9 @@ const BatchProductManagement = () => {
 
     const handleDownloadAllQR = async (batchId, batchNumber) => {
         try {
-            const token = localStorage.getItem('authToken');
+            const token = localStorage.getItem('manufacturer_token');
             const response = await axios.get(
-                `${process.env.REACT_APP_API_BASE_URL || 'http://localhost:8080'}/api/batches/${batchId}/items/qr-codes`,
+                `${process.env.REACT_APP_API_BASE_URL || ''}/api/batches/${batchId}/items/qr-codes`,
                 {
                     headers: token ? { Authorization: `Bearer ${token}` } : {},
                     responseType: 'blob',
@@ -131,9 +131,9 @@ const BatchProductManagement = () => {
 
         setDeleting(true);
         try {
-            const token = localStorage.getItem('authToken');
+            const token = localStorage.getItem('manufacturer_token');
             await axios.delete(
-                `${process.env.REACT_APP_API_BASE_URL || 'http://localhost:8080'}/api/batches/${batchToDelete.id}`,
+                `${process.env.REACT_APP_API_BASE_URL || ''}/api/batches/${batchToDelete.id}`,
                 {
                     headers: token ? { Authorization: `Bearer ${token}` } : {},
                 }
