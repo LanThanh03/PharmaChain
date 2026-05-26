@@ -1,0 +1,96 @@
+.verification-banner {
+  background: linear-gradient(135deg, #fef3c7 0%, #fcd34d 100%);
+  border: 1px solid #f59e0b;
+  border-radius: 0.75rem;
+  margin-bottom: 1.5rem;
+  overflow: hidden;
+}
+
+.banner-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1.5rem;
+}
+
+.banner-icon {
+  flex-shrink: 0;
+  color: #d97706;
+  margin-top: 0.25rem;
+}
+
+.banner-text {
+  flex: 1;
+}
+
+.banner-text h3 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #92400e;
+  margin: 0 0 0.5rem 0;
+}
+
+.banner-text p {
+  color: #78350f;
+  margin: 0 0 1rem 0;
+  line-height: 1.5;
+}
+
+.contact-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.contact-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #78350f;
+  font-size: 0.875rem;
+}
+
+.contact-item svg {
+  color: #d97706;
+}
+
+.banner-actions {
+  flex-shrink: 0;
+}
+
+.contact-button {
+  background: #d97706;
+  color: white;
+  border: none;
+  border-radius: 0.5rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.contact-button:hover {
+  background: #b45309;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .banner-content {
+    flex-direction: column;
+    gap: 1rem;
+  }
+  
+  .banner-actions {
+    align-self: stretch;
+  }
+  
+  .contact-button {
+    width: 100%;
+  }
+  
+  .contact-info {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+}

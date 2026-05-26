@@ -1,0 +1,519 @@
+.receive-goods {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+    background: #f8f9fa;
+    min-height: calc(100vh - 80px);
+}
+
+.page-header {
+    margin-bottom: 30px;
+}
+
+.page-header h1 {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: #2c3e50;
+    font-size: 2rem;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.page-icon {
+    color: #3498db;
+}
+
+.page-header p {
+    color: #7f8c8d;
+    font-size: 1.1rem;
+    margin: 0;
+}
+
+.alert {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 15px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    font-weight: 500;
+}
+
+.alert-error {
+    background: #f8d7da;
+    border: 1px solid #f5c6cb;
+    color: #721c24;
+}
+
+.alert-success {
+    background: #d4edda;
+    border: 1px solid #c3e6cb;
+    color: #155724;
+}
+
+/* Scanner Section */
+.scanner-section {
+    margin-bottom: 30px;
+}
+
+.scanner-card {
+    background: white;
+    border-radius: 12px;
+    padding: 30px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    text-align: center;
+}
+
+.scanner-header {
+    margin-bottom: 25px;
+}
+
+.scanner-header h3 {
+    color: #2c3e50;
+    margin: 15px 0 8px;
+    font-size: 1.5rem;
+}
+
+.scanner-header p {
+    color: #7f8c8d;
+    margin: 0;
+}
+
+.scanner-input {
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+.input-group {
+    display: flex;
+    align-items: center;
+    background: #f8f9fa;
+    border: 2px solid #e9ecef;
+    border-radius: 8px;
+    padding: 4px;
+    transition: all 0.3s ease;
+}
+
+.input-group:focus-within {
+    border-color: #3498db;
+    box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1);
+}
+
+.input-icon {
+    color: #7f8c8d;
+    margin: 0 12px;
+}
+
+.scan-input {
+    flex: 1;
+    border: none;
+    background: transparent;
+    padding: 12px 8px;
+    font-size: 1rem;
+    outline: none;
+}
+
+.scan-btn {
+    padding: 12px 24px;
+    margin: 0;
+    border-radius: 6px;
+}
+
+.btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.btn-primary {
+    background: #3498db;
+    color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+    background: #2980b9;
+    transform: translateY(-2px);
+}
+
+.btn-secondary {
+    background: #95a5a6;
+    color: white;
+}
+
+.btn-secondary:hover {
+    background: #7f8c8d;
+}
+
+.btn-success {
+    background: #27ae60;
+    color: white;
+}
+
+.btn-success:hover:not(:disabled) {
+    background: #229954;
+    transform: translateY(-2px);
+}
+
+.btn-outline {
+    background: transparent;
+    color: #3498db;
+    border: 2px solid #3498db;
+}
+
+.btn-outline:hover {
+    background: #3498db;
+    color: white;
+}
+
+.btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* Shipment Details */
+.shipment-details {
+    margin-bottom: 30px;
+}
+
+.details-card {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+}
+
+.details-header {
+    background: linear-gradient(135deg, #3498db, #2980b9);
+    color: white;
+    padding: 20px 30px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.details-header h3 {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 1.3rem;
+}
+
+.shipment-id {
+    background: rgba(255, 255, 255, 0.2);
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+.details-content {
+    padding: 30px;
+}
+
+.info-section,
+.products-section,
+.notes-section {
+    margin-bottom: 25px;
+}
+
+.info-section h4,
+.products-section h4,
+.notes-section h4 {
+    color: #2c3e50;
+    margin-bottom: 15px;
+    font-size: 1.1rem;
+    border-bottom: 2px solid #e9ecef;
+    padding-bottom: 8px;
+}
+
+.info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 15px;
+}
+
+.info-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid #f1f2f6;
+}
+
+.info-item:last-child {
+    border-bottom: none;
+}
+
+.info-item .label {
+    font-weight: 500;
+    color: #7f8c8d;
+}
+
+.info-item .value {
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+.info-item .value.highlight {
+    color: #27ae60;
+    font-size: 1.1rem;
+}
+
+/* Products Table */
+.products-table {
+    overflow-x: auto;
+    border-radius: 8px;
+    border: 1px solid #e9ecef;
+}
+
+.products-table table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.95rem;
+}
+
+.products-table th {
+    background: #f8f9fa;
+    color: #2c3e50;
+    font-weight: 600;
+    padding: 12px 16px;
+    text-align: left;
+    border-bottom: 2px solid #e9ecef;
+}
+
+.products-table td {
+    padding: 12px 16px;
+    border-bottom: 1px solid #f1f2f6;
+    color: #2c3e50;
+}
+
+.products-table tbody tr:hover {
+    background: #f8f9fa;
+}
+
+.no-products {
+    text-align: center;
+    color: #6c757d;
+    font-style: italic;
+    padding: 20px !important;
+}
+
+.product-name {
+    font-weight: 500;
+    color: #2c3e50;
+}
+
+.batch-code {
+    font-family: 'Courier New', monospace;
+    background: #e3f2fd;
+    padding: 4px 8px;
+    border-radius: 4px;
+    color: #1976d2;
+    font-weight: 600;
+}
+
+.quantity {
+    font-weight: 600;
+    color: #27ae60;
+}
+
+.expiry {
+    color: #f39c12;
+    font-weight: 500;
+}
+
+.manufacturer {
+    color: #7f8c8d;
+    font-style: italic;
+}
+
+/* Notes Section */
+.notes-content {
+    background: #fff3cd;
+    border: 1px solid #ffeaa7;
+    border-radius: 8px;
+    padding: 15px;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    color: #856404;
+    line-height: 1.5;
+}
+
+/* Details Actions */
+.details-actions {
+    padding: 0 30px 30px;
+    display: flex;
+    gap: 15px;
+    justify-content: flex-end;
+}
+
+/* Pending Shipments */
+.pending-shipments {
+    background: white;
+    border-radius: 12px;
+    padding: 30px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+}
+
+.pending-header {
+    margin-bottom: 25px;
+}
+
+.pending-header h3 {
+    color: #2c3e50;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 1.3rem;
+}
+
+.pending-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 20px;
+}
+
+.no-pending {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 60px 20px;
+    color: #7f8c8d;
+}
+
+.no-data-icon {
+    margin-bottom: 20px;
+    opacity: 0.5;
+}
+
+.no-pending h4 {
+    margin-bottom: 10px;
+    color: #5a6c7d;
+}
+
+.no-pending p {
+    font-size: 1rem;
+    line-height: 1.5;
+}
+
+.pending-card {
+    background: #f8f9fa;
+    border: 2px solid #e9ecef;
+    border-radius: 8px;
+    padding: 20px;
+    transition: all 0.3s ease;
+}
+
+.pending-card:hover {
+    border-color: #3498db;
+    box-shadow: 0 4px 15px rgba(52, 152, 219, 0.1);
+    transform: translateY(-2px);
+}
+
+.pending-header-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.pending-card .shipment-id {
+    background: #3498db;
+    color: white;
+    padding: 4px 10px;
+    border-radius: 15px;
+    font-weight: 600;
+    font-size: 0.85rem;
+}
+
+.tracking-code {
+    font-family: 'Courier New', monospace;
+    color: #7f8c8d;
+    font-size: 0.9rem;
+}
+
+.pending-content {
+    margin-bottom: 15px;
+}
+
+.from-info {
+    color: #2c3e50;
+    margin-bottom: 8px;
+}
+
+.expected-date {
+    color: #f39c12;
+    font-weight: 500;
+    margin-bottom: 5px;
+}
+
+.products-count {
+    color: #7f8c8d;
+    margin-bottom: 5px;
+}
+
+.total-value {
+    color: #27ae60;
+    font-weight: 600;
+    font-size: 1.1rem;
+}
+
+.pending-actions {
+    display: flex;
+    gap: 10px;
+}
+
+@media (max-width: 768px) {
+    .receive-goods {
+        padding: 10px;
+    }
+    
+    .scanner-card {
+        padding: 20px;
+    }
+    
+    .input-group {
+        flex-direction: column;
+        gap: 10px;
+    }
+    
+    .scan-input {
+        width: 100%;
+        text-align: center;
+    }
+    
+    .details-content {
+        padding: 20px;
+    }
+    
+    .info-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .details-actions {
+        padding: 0 20px 20px;
+        flex-direction: column;
+    }
+    
+    .pending-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .details-header {
+        padding: 15px 20px;
+        flex-direction: column;
+        gap: 10px;
+        text-align: center;
+    }
+}

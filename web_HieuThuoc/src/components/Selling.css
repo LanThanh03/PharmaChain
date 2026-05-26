@@ -1,0 +1,33 @@
+.section-card {
+  background: white;
+  border-radius: 10px;
+  margin-bottom: 16px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.section-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  padding: 16px;
+  border-bottom: 1px solid #eee;
+}
+
+.form-grid {
+  padding: 16px;
+}
+
+.form-actions {
+  padding: 16px;
+}
+
+.create-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #0d9488;
+  color: white;
+  padding: 10px 18px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}

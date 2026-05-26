@@ -1,0 +1,37 @@
+{
+  "name": "drug-supply-chain-contracts",
+  "version": "2.0.0",
+  "description": "Smart contracts for Drug Supply Chain Management with Item-level tracking",
+  "main": "index.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "test": "hardhat test",
+    "test:item-tracker": "hardhat test test/DrugItemTracker.test.js",
+    "deploy:localhost": "hardhat run scripts/deploy-item-tracker.js --network localhost",
+    "deploy:testnet": "hardhat run scripts/deploy-item-tracker.js --network sepolia",
+    "node": "hardhat node",
+    "compile": "hardhat compile",
+    "clean": "hardhat clean"
+  },
+  "keywords": [
+    "blockchain",
+    "ethereum",
+    "hardhat",
+    "smart-contracts",
+    "supply-chain",
+    "pharmaceutical"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.26.3"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.2",
+    "keccak256": "^1.0.6",
+    "merkletreejs": "^0.4.0"
+  }
+}

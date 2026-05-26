@@ -1,0 +1,27 @@
+<!-- 
+  Thêm các dependencies này vào file pom.xml hiện tại của bạn
+  (trong thẻ <dependencies>)
+-->
+
+<!-- ZXing for QR Code Generation -->
+<dependency>
+    <groupId>com.google.zxing</groupId>
+    <artifactId>core</artifactId>
+    <version>3.5.2</version>
+</dependency>
+
+<dependency>
+    <groupId>com.google.zxing</groupId>
+    <artifactId>javase</artifactId>
+    <version>3.5.2</version>
+</dependency>
+
+<!-- Web3j for Blockchain interaction (đã có rồi, chỉ confirm version) -->
+<!-- 
+<dependency>
+    <groupId>org.web3j</groupId>
+    <artifactId>core</artifactId>
+    <version>4.10.0</version>
+</dependency>
+-->
+

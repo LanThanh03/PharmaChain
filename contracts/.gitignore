@@ -1,0 +1,97 @@
+# Hardhat files
+cache
+artifacts
+
+# TypeChain
+typechain
+typechain-types
+
+# Logs
+*.log
+
+# Coverage reports
+coverage
+coverage.json
+
+# Dependency directories
+node_modules
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# hardhat network logs
+*.log
+
+# Compiled smart contracts
+artifacts/
+cache/
+
+# Gas reporter output
+gas-report.txt
+
+# Solidity coverage
+coverage/
+coverage.json
+
+# Local deployment addresses
+deployments/localhost/
+deployments/hardhat/
+
+# Hardhat Ignition default folder for deployments against a local node
+ignition/deployments/chain-31337/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# Local test networks
+.openzeppelin/
+.openzeppelin/*/
+
+# Ethers/Web3 cache
+.ethers-cache/
+.web3-cache/
+
+# Contract verification
+verification/
+
+# Local blockchain data
+data/
+chain-data/
+
+# Backup files
+*.bak
+*.backup
+
+# Test artifacts
+test-results/
+junit.xml
+
+# Flatten contracts
+flattened/
+
+# Scripts output
+scripts/output/

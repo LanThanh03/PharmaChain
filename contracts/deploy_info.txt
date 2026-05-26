@@ -1,0 +1,46 @@
+
+======================================================================
+🚀 DEPLOYING DRUG TRACEABILITY CONTRACT
+======================================================================
+
+📋 Deploying with account: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+💰 Account balance: 10000.0 ETH
+
+⏳ Deploying DrugTraceability...
+✅ Contract deployed successfully!
+📍 Contract Address: 0x5FbDB2315678afecb367f032d93F642f64180aa3
+🔗 Transaction Hash: 0x144c2e85d2cc8e2b3987f259f654ea0a5c3ca979c3e4fd96f906469297a690d7
+⛽ Gas Used: 30000000
+
+🔐 Setting up roles for test accounts...
+✅ Manufacturer role granted to: 0x70997970C51812dc3A010C7d01b50e0d17dc79C8
+✅ Distributor role granted to: 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
+✅ Pharmacy role granted to: 0x90F79bf6EB2c4f870365E785982E1f101E93b906
+
+🔍 Verifying contract information...
+📄 Contract Name: DrugTraceability
+🔤 Contract Symbol: DRUG
+👑 Deployer is Admin: true
+
+💾 Deployment info saved to: /Users/thanh.vlt/Documents/25-04_MEDIA_ĐỒÁN/extracted_doantotngiep/DoAnTotNghiepBC/contracts/deployments/DrugTraceability.json
+💾 ABI saved to: /Users/thanh.vlt/Documents/25-04_MEDIA_ĐỒÁN/extracted_doantotngiep/DoAnTotNghiepBC/contracts/abi/DrugTraceability.json
+💾 Verification JSON saved to: /Users/thanh.vlt/Documents/25-04_MEDIA_ĐỒÁN/extracted_doantotngiep/DoAnTotNghiepBC/contracts/DrugTraceability-verification-0x5FbD.json
+
+📋 VERIFICATION INFO:
+   Compiler: v0.8.20
+   Contract Name: contracts/DrugTraceability.sol:DrugTraceability
+
+======================================================================
+🎉 DEPLOYMENT COMPLETED SUCCESSFULLY!
+======================================================================
+📍 Contract Address: 0x5FbDB2315678afecb367f032d93F642f64180aa3
+🌐 Network: localhost
+⏰ Timestamp: 4/27/2026, 1:20:56 AM
+======================================================================
+
+📝 Next Steps:
+1. Update backend config with new contract address
+2. Verify contract on Blockscout using the verification JSON
+
+✅ Script completed successfully!
+📍 Contract: 0x5FbDB2315678afecb367f032d93F642f64180aa3

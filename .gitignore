@@ -1,0 +1,78 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# VS Code related
+.vscode/
+
+# Flutter/Dart related
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+**/build/
+
+# Android Studio artifacts
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# Maven (Backend)
+**/target/
+**/pom.xml.tag
+**/pom.xml.releaseBackup
+**/pom.xml.versionsBackup
+**/pom.xml.next
+**/release.properties
+**/dependency-reduced-pom.xml
+**/buildNumber.properties
+**/.mvn/timing.properties
+**/.mvn/wrapper/maven-wrapper.jar
+
+# Node/React/Hardhat
+**/node_modules/
+**/dist/
+**/coverage/
+**/.next/
+**/out/
+**/artifacts/
+**/cache/
+**/typechain-types/
+
+# Environment variables
+.env
+*.env
+*.env.local
+! .env.example
+
+# OS and Log files
+Thumbs.db
+desktop.ini
+
+# Project Specific
+.agent/
+.cursor/
+
+# Hardhat
+flattened/
+scripts/deployments/
+# But keep scripts folder in general
+
+# Backend Uploads
+backend/uploads/
