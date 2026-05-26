@@ -1,541 +1,407 @@
--- phpMyAdmin SQL Dump
--- version 5.2.1
--- https://www.phpmyadmin.net/
+-- MySQL dump 10.13  Distrib 8.0.46, for Linux (aarch64)
 --
--- Máy chủ: 127.0.0.1
--- Thời gian đã tạo: Th3 29, 2026 lúc 08:11 PM
--- Phiên bản máy phục vụ: 10.4.32-MariaDB
--- Phiên bản PHP: 8.1.23
-
-SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
-START TRANSACTION;
-SET time_zone = "+00:00";
-
+-- Host: localhost    Database: BlockChain_DA
+-- ------------------------------------------------------
+-- Server version	8.0.46
 
 /*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
 /*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
 /*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
-/*!40101 SET NAMES utf8mb4 */;
+/*!50503 SET NAMES utf8mb4 */;
+/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
+/*!40103 SET TIME_ZONE='+00:00' */;
+/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
+/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
+/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
+/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
 
 --
--- Cơ sở dữ liệu: `blockchain_da`
---
-CREATE DATABASE BlockChain_DA;
-USE BlockChain_DA;
-
-DELIMITER $$
---
--- Thủ tục
---
-CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_distributor_receive_shipment` (IN `p_shipment_id` BIGINT, IN `p_distributor_id` BIGINT)   BEGIN
-    DECLARE v_batch_id BIGINT;
-    DECLARE v_quantity INT;
-    DECLARE v_from_company_id BIGINT;
-    DECLARE v_exists INT;
-
-    -- Get shipment details
-    SELECT batch_id, quantity, from_company_id
-    INTO v_batch_id, v_quantity, v_from_company_id
-    FROM drug_shipments
-    WHERE id = p_shipment_id AND to_company_id = p_distributor_id;
-
-    -- Check if inventory record exists
-    SELECT COUNT(*) INTO v_exists
-    FROM distributor_inventory
-    WHERE distributor_id = p_distributor_id AND batch_id = v_batch_id;
-
-    IF v_exists > 0 THEN
-        -- Update existing record
-        UPDATE distributor_inventory
-        SET quantity = quantity + v_quantity,
-            received_shipment_id = p_shipment_id,
-            received_date = NOW(),
-            updated_at = NOW()
-        WHERE distributor_id = p_distributor_id AND batch_id = v_batch_id;
-    ELSE
-        -- Insert new record
-        INSERT INTO distributor_inventory (
-            distributor_id, batch_id, drug_name, manufacturer, batch_number,
-            quantity, manufacture_date, expiry_date, qr_code,
-            received_from_company_id, received_shipment_id, received_date, received_quantity
-        )
-        SELECT
-            p_distributor_id, db.id, db.drug_name, db.manufacturer, db.batch_number,
-            v_quantity, db.manufacture_timestamp, db.expiry_date, db.qr_code,
-            v_from_company_id, p_shipment_id, NOW(), v_quantity
-        FROM drug_batches db
-        WHERE db.id = v_batch_id;
-    END IF;
-
-    -- Update shipment status
-    UPDATE drug_shipments
-    SET shipment_status = 'DELIVERED',
-        actual_delivery_date = NOW()
-    WHERE id = p_shipment_id;
-END$$
-
-CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_generate_items_for_batch` (IN `p_batch_id` BIGINT, IN `p_quantity` INT, IN `p_prefix` VARCHAR(50))   BEGIN
-  DECLARE v_counter INT DEFAULT 1;
-  DECLARE v_drug_product_id BIGINT;
-  DECLARE v_manufacture_date DATETIME(6);
-  DECLARE v_expiry_date DATETIME(6);
-  DECLARE v_item_code VARCHAR(100);
-
-  -- Get batch info
-  SELECT
-    db.drug_name,
-    db.manufacture_timestamp,
-    db.expiry_date
-  INTO
-    @drug_name,
-    v_manufacture_date,
-    v_expiry_date
-  FROM drug_batches db
-  WHERE db.id = p_batch_id;
-
-  -- Get drug_product_id (assuming it exists)
-  SELECT dp.id INTO v_drug_product_id
-  FROM drug_products dp
-  WHERE dp.name = @drug_name
-  LIMIT 1;
-
-  -- Generate items
-  WHILE v_counter <= p_quantity DO
-    SET v_item_code = CONCAT(
-      p_prefix,
-      '-BATCH', LPAD(p_batch_id, 6, '0'),
-      '-', LPAD(v_counter, 4, '0')
-    );
-
-    INSERT INTO product_items (
-      item_code,
-      batch_id,
-      drug_product_id,
-      current_status,
-      current_owner_type,
-      manufacture_date,
-      expiry_date,
-      created_at
-    ) VALUES (
-      v_item_code,
-      p_batch_id,
-      v_drug_product_id,
-      'MANUFACTURED',
-      'MANUFACTURER',
-      v_manufacture_date,
-      v_expiry_date,
-      NOW(6)
-    );
-
-    SET v_counter = v_counter + 1;
-  END WHILE;
-
-  SELECT CONCAT('Generated ', p_quantity, ' items for batch ', p_batch_id) AS result;
-END$$
-
-CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_get_item_journey` (IN `p_item_code` VARCHAR(100))   BEGIN
-  -- Get item info
-  SELECT * FROM v_product_items_full
-  WHERE item_code = p_item_code;
-
-  -- Get movement history
-  SELECT
-    pim.*,
-    CONCAT(pim.from_company_name, ' → ', pim.to_company_name) AS movement_description
-  FROM product_item_movements pim
-  JOIN product_items pi ON pim.item_id = pi.id
-  WHERE pi.item_code = p_item_code
-  ORDER BY pim.movement_timestamp ASC;
-
-  -- Get verification history
-  SELECT * FROM product_item_verifications piv
-  JOIN product_items pi ON piv.item_id = pi.id
-  WHERE pi.item_code = p_item_code
-  ORDER BY piv.scan_timestamp DESC
-  LIMIT 20;
-END$$
-
-CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_pharmacy_receive_shipment` (IN `p_shipment_id` BIGINT, IN `p_pharmacy_id` BIGINT)   BEGIN
-    DECLARE v_batch_id BIGINT;
-    DECLARE v_quantity INT;
-    DECLARE v_from_company_id BIGINT;
-    DECLARE v_exists INT;
-
-    -- Get shipment details
-    SELECT batch_id, quantity, from_company_id
-    INTO v_batch_id, v_quantity, v_from_company_id
-    FROM drug_shipments
-    WHERE id = p_shipment_id AND to_company_id = p_pharmacy_id;
-
-    -- Check if inventory record exists
-    SELECT COUNT(*) INTO v_exists
-    FROM pharmacy_inventory
-    WHERE pharmacy_id = p_pharmacy_id AND batch_id = v_batch_id;
-
-    IF v_exists > 0 THEN
-        -- Update existing record
-        UPDATE pharmacy_inventory
-        SET quantity = quantity + v_quantity,
-            received_shipment_id = p_shipment_id,
-            received_date = NOW(),
-            updated_at = NOW()
-        WHERE pharmacy_id = p_pharmacy_id AND batch_id = v_batch_id;
-    ELSE
-        -- Insert new record
-        INSERT INTO pharmacy_inventory (
-            pharmacy_id, batch_id, drug_name, manufacturer, batch_number,
-            quantity, manufacture_date, expiry_date, qr_code,
-            received_from_distributor_id, received_shipment_id, received_date, received_quantity
-        )
-        SELECT
-            p_pharmacy_id, db.id, db.drug_name, db.manufacturer, db.batch_number,
-            v_quantity, db.manufacture_timestamp, db.expiry_date, db.qr_code,
-            v_from_company_id, p_shipment_id, NOW(), v_quantity
-        FROM drug_batches db
-        WHERE db.id = v_batch_id;
-    END IF;
-
-    -- Update shipment status
-    UPDATE drug_shipments
-    SET shipment_status = 'DELIVERED',
-        actual_delivery_date = NOW()
-    WHERE id = p_shipment_id;
-END$$
-
-CREATE DEFINER=`root`@`localhost` PROCEDURE `VerifyDrugByQR` (IN `qr_code_input` VARCHAR(1000))   BEGIN
-    DECLARE batch_count INT DEFAULT 0;
-    DECLARE is_expired BOOLEAN DEFAULT FALSE;
-    DECLARE batch_status VARCHAR(50);
-    DECLARE expiry_date_val TIMESTAMP;
-    DECLARE batch_id_val BIGINT;
-
-    -- Check if batch exists
-    SELECT COUNT(*), status, expiry_date, id
-    INTO batch_count, batch_status, expiry_date_val, batch_id_val
-    FROM drug_batches
-    WHERE qr_code = qr_code_input
-    LIMIT 1;
-
-    -- Check if expired
-    IF expiry_date_val < NOW() THEN
-        SET is_expired = TRUE;
-    END IF;
-
-    -- Return verification result with batch details
-    IF batch_count > 0 THEN
-        SELECT
-            db.*,
-            CASE
-                WHEN is_expired THEN 'EXPIRED'
-                WHEN batch_status = 'SOLD' THEN 'ALREADY_SOLD'
-                ELSE 'VALID'
-            END as verification_status,
-            is_expired,
-            (SELECT COUNT(*) FROM drug_shipments WHERE batch_id = batch_id_val) as shipment_count
-        FROM drug_batches db
-        WHERE db.id = batch_id_val;
-    ELSE
-        SELECT
-            qr_code_input as qr_code,
-            'INVALID' as verification_status,
-            FALSE as batch_exists,
-            NULL as drug_name,
-            NULL as manufacturer;
-    END IF;
-END$$
-
-DELIMITER ;
-
--- --------------------------------------------------------
-
---
--- Cấu trúc bảng cho bảng `allergen_categories`
+-- Table structure for table `allergen_categories`
 --
 
+DROP TABLE IF EXISTS `allergen_categories`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `allergen_categories` (
-  `id` int(11) NOT NULL,
-  `category` varchar(50) NOT NULL,
-  `common_symptoms` text DEFAULT NULL,
+  `id` int NOT NULL AUTO_INCREMENT,
+  `category` varchar(50) COLLATE utf8mb4_general_ci NOT NULL,
+  `common_symptoms` text COLLATE utf8mb4_general_ci,
   `created_at` datetime(6) NOT NULL,
-  `cross_reactions` text DEFAULT NULL,
-  `name` varchar(200) NOT NULL,
-  `severity_levels` text DEFAULT NULL
+  `cross_reactions` text COLLATE utf8mb4_general_ci,
+  `name` varchar(200) COLLATE utf8mb4_general_ci NOT NULL,
+  `severity_levels` text COLLATE utf8mb4_general_ci,
+  PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc bảng cho bảng `app_users`
+-- Dumping data for table `allergen_categories`
 --
 
+LOCK TABLES `allergen_categories` WRITE;
+/*!40000 ALTER TABLE `allergen_categories` DISABLE KEYS */;
+/*!40000 ALTER TABLE `allergen_categories` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `app_users`
+--
+
+DROP TABLE IF EXISTS `app_users`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `app_users` (
-  `id` bigint(20) NOT NULL,
-  `allergies` text DEFAULT NULL,
-  `avatar_url` varchar(500) DEFAULT NULL,
-  `blood_type` varchar(5) DEFAULT NULL,
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `allergies` text COLLATE utf8mb4_general_ci,
+  `avatar_url` varchar(500) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `blood_type` varchar(5) COLLATE utf8mb4_general_ci DEFAULT NULL,
   `created_at` datetime(6) NOT NULL,
   `date_of_birth` date DEFAULT NULL,
-  `device_info` varchar(500) DEFAULT NULL,
-  `email` varchar(100) DEFAULT NULL,
-  `fcm_token` varchar(500) DEFAULT NULL,
-  `full_name` varchar(100) DEFAULT NULL,
-  `gender` enum('FEMALE','MALE','OTHER') DEFAULT NULL,
+  `device_info` varchar(500) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `email` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `fcm_token` varchar(500) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `full_name` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `gender` enum('FEMALE','MALE','OTHER') COLLATE utf8mb4_general_ci DEFAULT NULL,
   `is_active` bit(1) DEFAULT NULL,
   `is_verified` bit(1) DEFAULT NULL,
-  `language` varchar(10) DEFAULT NULL,
+  `language` varchar(10) COLLATE utf8mb4_general_ci DEFAULT NULL,
   `last_login_at` datetime(6) DEFAULT NULL,
-  `medical_conditions` text DEFAULT NULL,
+  `medical_conditions` text COLLATE utf8mb4_general_ci,
   `notification_enabled` bit(1) DEFAULT NULL,
-  `password_hash` varchar(255) DEFAULT NULL,
-  `phone` varchar(20) DEFAULT NULL,
-  `reminder_sound` varchar(50) DEFAULT NULL,
-  `updated_at` datetime(6) DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+  `password_hash` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `phone` varchar(20) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `reminder_sound` varchar(50) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `updated_at` datetime(6) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UK4vj92ux8a2eehds1mdvmks473` (`email`),
+  UNIQUE KEY `UKr5r4rpieqrjfj44jh43gabif1` (`phone`)
+) ENGINE=InnoDB AUTO_INCREMENT=155468012 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `app_users`
+-- Dumping data for table `app_users`
 --
 
-INSERT INTO `app_users` (`id`, `allergies`, `avatar_url`, `blood_type`, `created_at`, `date_of_birth`, `device_info`, `email`, `fcm_token`, `full_name`, `gender`, `is_active`, `is_verified`, `language`, `last_login_at`, `medical_conditions`, `notification_enabled`, `password_hash`, `phone`, `reminder_sound`, `updated_at`) VALUES
-(1, NULL, NULL, NULL, '2026-02-25 12:31:38.000000', NULL, NULL, 'user1@demo.com', NULL, 'Demo User 1', NULL, b'1', b'1', NULL, NULL, NULL, NULL, NULL, '0987654321', NULL, '2026-02-25 12:31:38.000000'),
-(4, NULL, NULL, NULL, '2026-02-25 12:48:38.000000', NULL, NULL, 'user_mobile_0@demo.com', NULL, 'Người dùng 0', NULL, b'1', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-02-25 12:48:38.000000'),
-(155468011, NULL, NULL, NULL, '2026-02-27 00:57:06.000000', NULL, NULL, 'user_mobile_155468011@demo.com', NULL, 'Người dùng 155468011', NULL, b'1', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-02-27 00:57:06.000000');
-
--- --------------------------------------------------------
+LOCK TABLES `app_users` WRITE;
+/*!40000 ALTER TABLE `app_users` DISABLE KEYS */;
+INSERT INTO `app_users` VALUES (1,NULL,NULL,NULL,'2026-02-25 12:31:38.000000',NULL,NULL,'user1@demo.com',NULL,'Demo User 1',NULL,_binary '',_binary '',NULL,NULL,NULL,NULL,NULL,'0987654321',NULL,'2026-02-25 12:31:38.000000'),(4,NULL,NULL,NULL,'2026-02-25 12:48:38.000000',NULL,NULL,'user_mobile_0@demo.com',NULL,'Người dùng 0',NULL,_binary '',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2026-02-25 12:48:38.000000'),(155468011,NULL,NULL,NULL,'2026-02-27 00:57:06.000000',NULL,NULL,'user_mobile_155468011@demo.com',NULL,'Người dùng 155468011',NULL,_binary '',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2026-02-27 00:57:06.000000');
+/*!40000 ALTER TABLE `app_users` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc bảng cho bảng `blockchain_config`
+-- Table structure for table `blockchain_config`
 --
 
+DROP TABLE IF EXISTS `blockchain_config`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `blockchain_config` (
-  `id` int(11) NOT NULL,
-  `config_key` varchar(100) NOT NULL,
-  `config_value` text NOT NULL,
-  `description` varchar(500) DEFAULT NULL,
-  `is_active` tinyint(1) NOT NULL DEFAULT 1,
-  `updated_by` varchar(36) DEFAULT NULL,
-  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
-  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+  `id` int NOT NULL AUTO_INCREMENT,
+  `config_key` varchar(100) COLLATE utf8mb4_general_ci NOT NULL,
+  `config_value` text COLLATE utf8mb4_general_ci NOT NULL,
+  `description` varchar(500) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `is_active` tinyint(1) NOT NULL DEFAULT '1',
+  `updated_by` varchar(36) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `config_key` (`config_key`),
+  KEY `idx_config_key` (`config_key`),
+  KEY `idx_is_active` (`is_active`)
+) ENGINE=InnoDB AUTO_INCREMENT=8 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `blockchain_config`
+-- Dumping data for table `blockchain_config`
 --
 
-INSERT INTO `blockchain_config` (`id`, `config_key`, `config_value`, `description`, `is_active`, `updated_by`, `created_at`, `updated_at`) VALUES
-(1, 'contract_address', '0x5FbDB2315678afecb367f032d93F642f64180aa3', 'PharmaLedger smart contract address', 1, NULL, '2025-09-18 15:38:49', '2025-09-18 15:38:49'),
-(2, 'network_url', 'http://localhost:8545', 'Blockchain network RPC URL', 1, NULL, '2025-09-18 15:38:49', '2025-09-18 15:38:49'),
-(3, 'chain_id', '1337', 'Blockchain network chain ID', 1, NULL, '2025-09-18 15:38:49', '2025-09-18 15:38:49'),
-(4, 'last_synced_block', '0', 'Last synced block number for event indexing', 1, NULL, '2025-09-18 15:38:49', '2025-09-18 15:38:49'),
-(5, 'indexer_enabled', 'true', 'Enable/disable blockchain event indexing', 1, NULL, '2025-09-18 15:38:49', '2025-09-18 15:38:49'),
-(6, 'gas_price', '20000000000', 'Default gas price in wei', 1, NULL, '2025-09-18 15:38:49', '2025-09-18 15:38:49'),
-(7, 'gas_limit', '6721975', 'Default gas limit for transactions', 1, NULL, '2025-09-18 15:38:49', '2025-09-18 15:38:49');
-
--- --------------------------------------------------------
+LOCK TABLES `blockchain_config` WRITE;
+/*!40000 ALTER TABLE `blockchain_config` DISABLE KEYS */;
+INSERT INTO `blockchain_config` VALUES (1,'contract_address','0x5FbDB2315678afecb367f032d93F642f64180aa3','PharmaLedger smart contract address',1,NULL,'2025-09-18 15:38:49','2025-09-18 15:38:49'),(2,'network_url','http://localhost:8545','Blockchain network RPC URL',1,NULL,'2025-09-18 15:38:49','2025-09-18 15:38:49'),(3,'chain_id','1337','Blockchain network chain ID',1,NULL,'2025-09-18 15:38:49','2025-09-18 15:38:49'),(4,'last_synced_block','0','Last synced block number for event indexing',1,NULL,'2025-09-18 15:38:49','2025-09-18 15:38:49'),(5,'indexer_enabled','true','Enable/disable blockchain event indexing',1,NULL,'2025-09-18 15:38:49','2025-09-18 15:38:49'),(6,'gas_price','20000000000','Default gas price in wei',1,NULL,'2025-09-18 15:38:49','2025-09-18 15:38:49'),(7,'gas_limit','6721975','Default gas limit for transactions',1,NULL,'2025-09-18 15:38:49','2025-09-18 15:38:49');
+/*!40000 ALTER TABLE `blockchain_config` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc bảng cho bảng `blockchain_events`
+-- Table structure for table `blockchain_events`
 --
 
+DROP TABLE IF EXISTS `blockchain_events`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `blockchain_events` (
-  `id` bigint(20) NOT NULL,
+  `id` bigint NOT NULL AUTO_INCREMENT,
   `batch_id` decimal(38,0) DEFAULT NULL,
   `block_number` decimal(38,0) NOT NULL,
-  `contract_address` varchar(255) NOT NULL,
-  `event_data` text DEFAULT NULL,
-  `event_type` varchar(255) NOT NULL,
-  `from_address` varchar(255) DEFAULT NULL,
+  `contract_address` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `event_data` text COLLATE utf8mb4_general_ci,
+  `event_type` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `from_address` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
   `indexed_at` datetime(6) NOT NULL,
   `log_index` decimal(38,0) NOT NULL,
   `processed` bit(1) NOT NULL,
   `shipment_id` decimal(38,0) DEFAULT NULL,
-  `to_address` varchar(255) DEFAULT NULL,
-  `transaction_hash` varchar(255) NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+  `to_address` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `transaction_hash` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UKmy081fpj6u877vqk9jv516sr4` (`transaction_hash`),
+  KEY `idx_block_number` (`block_number`),
+  KEY `idx_transaction_hash` (`transaction_hash`),
+  KEY `idx_event_type` (`event_type`),
+  KEY `idx_transaction_hash_be` (`transaction_hash`)
+) ENGINE=InnoDB AUTO_INCREMENT=39 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `blockchain_events`
+-- Dumping data for table `blockchain_events`
 --
 
-INSERT INTO `blockchain_events` (`id`, `batch_id`, `block_number`, `contract_address`, `event_data`, `event_type`, `from_address`, `indexed_at`, `log_index`, `processed`, `shipment_id`, `to_address`, `transaction_hash`) VALUES
-(1, 0, 8, '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9', '{\"quantity\":\"\",\"qrCode\":\"\",\"drugName\":\"\"}', 'BatchIssued', '', '2025-10-22 00:36:42.000000', 1, b'0', NULL, NULL, '0xec2e2d7d8077e5ca84ff859bfa4a3c11e20c1d1197469138459e29f4313d1edf'),
-(2, 0, 16, '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707', '{\"quantity\":\"\",\"qrCode\":\"\",\"drugName\":\"\"}', 'BatchIssued', '', '2025-10-28 12:27:46.000000', 1, b'0', NULL, NULL, '0xe7983b5b3ce2b96a900f5bfe6420ed40690a823d7235d6ddcfd134d3e0686527'),
-(3, 0, 17, '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707', '{\"quantity\":\"\"}', 'ShipmentCreated', '', '2025-10-28 12:27:46.000000', 2, b'0', 0, '', '0xc9270e94870eb4d99ad5a0935db12486f05daa9d42ecacd71319ca32801d1629');
-
--- --------------------------------------------------------
+LOCK TABLES `blockchain_events` WRITE;
+/*!40000 ALTER TABLE `blockchain_events` DISABLE KEYS */;
+INSERT INTO `blockchain_events` VALUES (5,8,10760000,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 00:02:25.840675',1,_binary '\0',NULL,NULL,'0x3d13e52005d568fc35da708e22e9a94333591da551dd228fac8d4a2e4dd2fe92'),(6,9,10760000,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 00:02:25.853346',1,_binary '\0',NULL,NULL,'0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94'),(7,8,10760000,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','ShipmentCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 00:02:26.209660',4,_binary '\0',2,NULL,'0x02de9e3199d1c4d8e02fb5d32851998174e470c7a1637c9ed5c8c6adae8284ef'),(8,9,10760000,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','ShipmentCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 00:02:26.221010',0,_binary '\0',3,NULL,'0x77ce7f2298c99133630cb0a9e5d5afb92253152072b38654ab5eb2c9e5f1c7d6'),(9,10,10760000,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 00:05:24.213627',1,_binary '\0',NULL,NULL,'0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9'),(10,10,10760000,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','ShipmentCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 00:06:24.428334',0,_binary '\0',4,NULL,'0x1025831fa770c601dbfcb00730a77cfe957cd4b67b078e73bc23eb2e875236dc'),(11,11,10760000,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 00:08:54.195796',1,_binary '\0',NULL,NULL,'0xcf28c7f6d25b233fe7c205e044a66d63fdf5102ea47d514116be8ff4519907b8'),(12,7,10760000,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','ShipmentCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 00:12:24.535485',5,_binary '\0',5,NULL,'0x57841173520925f617f26bd58388d2af9e92cd0e30405e9a18bb978720e5d43b'),(13,7,10760000,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 00:24:49.281607',1,_binary '\0',NULL,NULL,'0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5'),(14,12,10775952,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:13:01.869918',9,_binary '\0',NULL,NULL,'0xb700d81a2dae2b48ae7c4bb1489a0ebcaf1d494706cdb01176b976b58d54b993'),(15,12,10775961,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','ShipmentCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:15:02.200042',0,_binary '\0',6,NULL,'0x35da3db69ff7b50923c6c8076a1579686b1032cf3cc532f57ebec5751dfa5d59'),(16,13,10775999,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:23:17.535876',14,_binary '\0',NULL,NULL,'0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e'),(17,13,10776005,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','ShipmentCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:24:17.803399',0,_binary '\0',7,NULL,'0xc6418d334e122956646836b79038e147cdcecf88772bb5985f823db80fb7cad1'),(18,14,10776066,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:37:12.883879',1,_binary '\0',NULL,NULL,'0xb6e4837e3d053aafe10a9778cdc1695221cb3302a2e26bf2ae5a68274d0ee1e8'),(19,14,10776067,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','ShipmentCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:37:43.168820',0,_binary '\0',8,NULL,'0x11a0c7a3801776632a9f43e171cef058302b81c3714945d077b1484f6d9127a6'),(20,15,10776068,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:38:12.889507',1,_binary '\0',NULL,NULL,'0xb4086de847760b9d3af7192ead9ce718c4b585873c9b6ff4a8764d40e0b76ef5'),(21,16,10776070,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:38:42.879176',1,_binary '\0',NULL,NULL,'0x653a1b0d1007b9930fbab471f6ea1b9d22045a0cdba2447245cb643047d0b2fe'),(22,15,10776069,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','ShipmentCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:38:43.144574',0,_binary '\0',9,NULL,'0x6ccbdc611b9e956cf34690737b3c480712c2b0d70320502d9867fefbf22d1d44'),(23,16,10776071,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','ShipmentCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:38:43.160818',1,_binary '\0',10,NULL,'0x3ceb9f391c140dbb22aedf53d74c95bdd04fa0bb573f75c1bf1fc178e9a139d7'),(24,17,10776072,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:39:12.885242',7,_binary '\0',NULL,NULL,'0xe6e55f752f87c196b247fa351f5006d2b2deb9803e68903ffbe8aa4c91d68f1d'),(25,18,10776074,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:39:42.883952',1,_binary '\0',NULL,NULL,'0x03c0ab11fc25208ab8608d72dade8fac2a183f89d0f844f42e6c1c0c8f3367ab'),(26,17,10776073,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','ShipmentCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:39:43.150013',0,_binary '\0',11,NULL,'0xa4d7d33a1665393f70cdade132ff3671fa145270822efe06aeeb3979b536d08e'),(27,18,10776075,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','ShipmentCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:39:43.161783',0,_binary '\0',12,NULL,'0x475fd2afbbd0f8be33051220d3f425ad8b91e8e0c4bb42020e3330dbbf684bca'),(28,19,10776076,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:40:12.904461',1,_binary '\0',NULL,NULL,'0x4c3e4ab9513089993a3f9025dc8aa1ae3f2dc22ad224145251c085ed4d4787b4'),(29,20,10776078,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:40:12.920473',1,_binary '\0',NULL,NULL,'0xc97bef8eeb7cce39858d706d53f529a1ba14739f70f076b5109f5453fcf86b69'),(30,19,10776077,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','ShipmentCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:40:13.171640',0,_binary '\0',13,NULL,'0xc4d577b20b7625bd496baceb5d44998c5213bdd70cecc14325dea437526ee53e'),(31,21,10776080,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:40:42.884906',1,_binary '\0',NULL,NULL,'0x08501b58be8bd5012b245a98c29bc6f60c1cce023339675cff766622b4a0c664'),(32,20,10776079,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','ShipmentCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:40:43.145666',0,_binary '\0',14,NULL,'0x0be007dafbed5f0da3c98ca704ec46e814a960a95d6dfc32b6a31528daaa8d7b'),(33,22,10776082,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:41:12.910920',1,_binary '\0',NULL,NULL,'0x9bc369963920a1edfd92591e077e0424da7c08b1172e64b587045e54ea374b3f'),(34,21,10776081,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','ShipmentCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:41:13.176504',0,_binary '\0',15,NULL,'0x19e16b35883ba1e972828564dc70e3998305f5b87450be6ee112fd847b2cd7f7'),(35,22,10776083,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','ShipmentCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:41:13.190522',0,_binary '\0',16,NULL,'0x804f1af94b52437927e644a89967746e7be1ffd7cbef7a4b97862ab4aef939a0'),(36,23,10776084,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-02 22:41:43.032318',1,_binary '\0',NULL,NULL,'0x14839f2c1434329918fe11f3be2654e0dfde0d17eb56a81403b44d65d942ce15'),(37,24,10903206,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','BatchCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-23 14:25:08.615011',129,_binary '\0',NULL,NULL,'0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b'),(38,24,10903220,'0xDDd3052fF0b0a39882260A07608d9053AdeDDB98','{}','ShipmentCreated','0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','2026-05-23 14:28:08.857693',362,_binary '\0',17,NULL,'0x4f918f86852823ae34966e40dd14177970cbb19fb737426499f20535f0519b97');
+/*!40000 ALTER TABLE `blockchain_events` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc bảng cho bảng `blockchain_transactions`
+-- Table structure for table `blockchain_transactions`
 --
 
+DROP TABLE IF EXISTS `blockchain_transactions`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `blockchain_transactions` (
-  `id` bigint(20) NOT NULL,
+  `id` bigint NOT NULL AUTO_INCREMENT,
   `block_number` decimal(38,0) NOT NULL,
   `created_at` datetime(6) NOT NULL,
-  `error_message` varchar(1000) DEFAULT NULL,
-  `event_logs` tinytext DEFAULT NULL,
-  `from_address` varchar(42) NOT NULL,
-  `function_name` varchar(100) NOT NULL,
+  `error_message` varchar(1000) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `event_logs` tinytext COLLATE utf8mb4_general_ci,
+  `from_address` varchar(42) COLLATE utf8mb4_general_ci NOT NULL,
+  `function_name` varchar(100) COLLATE utf8mb4_general_ci NOT NULL,
   `gas_price` decimal(38,0) DEFAULT NULL,
   `gas_used` decimal(38,0) DEFAULT NULL,
-  `input_data` tinytext DEFAULT NULL,
-  `status` enum('FAILED','PENDING','REVERTED','SUCCESS') NOT NULL,
+  `input_data` tinytext COLLATE utf8mb4_general_ci,
+  `status` enum('FAILED','PENDING','REVERTED','SUCCESS') COLLATE utf8mb4_general_ci NOT NULL,
   `timestamp` datetime(6) NOT NULL,
-  `to_address` varchar(42) NOT NULL,
-  `transaction_hash` varchar(66) NOT NULL,
-  `batch_id` bigint(20) DEFAULT NULL,
-  `shipment_id` bigint(20) DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+  `to_address` varchar(42) COLLATE utf8mb4_general_ci NOT NULL,
+  `transaction_hash` varchar(66) COLLATE utf8mb4_general_ci NOT NULL,
+  `batch_id` bigint DEFAULT NULL,
+  `shipment_id` bigint DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UKp634ahad8pjht0rqxixrykeu4` (`transaction_hash`),
+  UNIQUE KEY `idx_transaction_hash` (`transaction_hash`),
+  KEY `idx_from_address` (`from_address`),
+  KEY `idx_batch_id` (`batch_id`),
+  KEY `idx_shipment_id` (`shipment_id`),
+  KEY `idx_status` (`status`),
+  KEY `idx_composite_status_timestamp` (`status`,`timestamp`),
+  KEY `idx_from_address_bt` (`from_address`),
+  KEY `idx_batch_id_bt` (`batch_id`),
+  KEY `idx_shipment_id_bt` (`shipment_id`),
+  KEY `idx_status_bt` (`status`),
+  CONSTRAINT `FK1xwa92xkjqy4m4w86qt9frq0p` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`),
+  CONSTRAINT `FKthjbaitcky21e87g7k64ixmyu` FOREIGN KEY (`shipment_id`) REFERENCES `drug_shipments` (`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=48 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `blockchain_transactions`
+-- Dumping data for table `blockchain_transactions`
 --
 
-INSERT INTO `blockchain_transactions` (`id`, `block_number`, `created_at`, `error_message`, `event_logs`, `from_address`, `function_name`, `gas_price`, `gas_used`, `input_data`, `status`, `timestamp`, `to_address`, `transaction_hash`, `batch_id`, `shipment_id`) VALUES
-(140, 8, '2026-02-26 21:28:37.000000', NULL, NULL, '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266', 'createShipment', NULL, 31170, NULL, 'SUCCESS', '2026-02-26 21:28:37.000000', '0xe7f1725e7734ce288f8367e1bb143e90bb3f0512', '0xf8460752b6755dab28b2ca36a9dde34c8ccc9b6cb41674e7609b5bc5d4e89f84', 96, 62),
-(141, 9, '2026-02-26 21:28:45.000000', NULL, NULL, '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266', 'receiveShipment', NULL, 23400, NULL, 'SUCCESS', '2026-02-26 21:28:45.000000', '0xe7f1725e7734ce288f8367e1bb143e90bb3f0512', '0xa12f4f17ffeb10fd96254ab7582e37e5899d2fdaf024ceaaf43adb65b0d2613d', 96, 62),
-(142, 11, '2026-02-26 21:29:03.000000', NULL, NULL, '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266', 'receiveShipment', NULL, 23490, NULL, 'SUCCESS', '2026-02-26 21:29:03.000000', '0xe7f1725e7734ce288f8367e1bb143e90bb3f0512', '0xffda611663d742abc71c3f7265c821edf52e83bad90a5b07df9215adfb1b9bfd', 96, 63),
-(143, 2, '2026-03-09 07:55:49.000000', NULL, NULL, '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266', 'createShipment', NULL, 31170, NULL, 'SUCCESS', '2026-03-09 07:55:49.000000', '0xe7f1725e7734ce288f8367e1bb143e90bb3f0512', '0xbcd13fecbc2ba15820db1263fc89c88cc18224130f5a848c70e2a5e62730215f', 97, 64),
-(144, 3, '2026-03-25 15:03:36.000000', NULL, NULL, '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266', 'createShipment', NULL, 31170, NULL, 'SUCCESS', '2026-03-25 15:03:36.000000', '0xe7f1725e7734ce288f8367e1bb143e90bb3f0512', '0xb7921efc508a368910d0a58e8a2034992ad70df1a928f9926b590139b4983184', 98, 65),
-(145, 4, '2026-03-25 15:03:50.000000', NULL, NULL, '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266', 'receiveShipment', NULL, 23400, NULL, 'SUCCESS', '2026-03-25 15:03:50.000000', '0xe7f1725e7734ce288f8367e1bb143e90bb3f0512', '0x82cb0babaf5910aeb9a6d5d4380a00755b37def1a24dbff9e0b3d1fc51cf62e6', 98, 65),
-(146, 6, '2026-03-25 15:04:33.000000', NULL, NULL, '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266', 'receiveShipment', NULL, 23490, NULL, 'SUCCESS', '2026-03-25 15:04:33.000000', '0xe7f1725e7734ce288f8367e1bb143e90bb3f0512', '0xf55077780de5b185dde52166ea5953c42c20c0e05da78f77a146e528811f687f', 98, 66);
-
--- --------------------------------------------------------
+LOCK TABLES `blockchain_transactions` WRITE;
+/*!40000 ALTER TABLE `blockchain_transactions` DISABLE KEYS */;
+INSERT INTO `blockchain_transactions` VALUES (14,10769908,'2026-05-02 00:04:37.723860',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createBatchWithItems',10000000000,443232,NULL,'SUCCESS','2026-05-02 00:04:37.718288','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9',NULL,NULL),(15,10769913,'2026-05-02 00:05:37.660436',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createAndDispatchShipment',10000000000,368734,NULL,'SUCCESS','2026-05-02 00:05:37.656167','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x1025831fa770c601dbfcb00730a77cfe957cd4b67b078e73bc23eb2e875236dc',NULL,NULL),(17,10769927,'2026-05-02 00:08:25.480952',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createBatchWithItems',10000000000,443220,NULL,'SUCCESS','2026-05-02 00:08:25.476875','0xddd3052ff0b0a39882260a07608d9053adeddb98','0xcf28c7f6d25b233fe7c205e044a66d63fdf5102ea47d514116be8ff4519907b8',NULL,NULL),(18,10769941,'2026-05-02 00:11:37.813674',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createAndDispatchShipment',10000000000,368734,NULL,'SUCCESS','2026-05-02 00:11:37.807924','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x57841173520925f617f26bd58388d2af9e92cd0e30405e9a18bb978720e5d43b',NULL,NULL),(20,10775952,'2026-05-02 22:12:25.927826',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createBatchWithItems',10000000000,443232,NULL,'SUCCESS','2026-05-02 22:12:25.912463','0xddd3052ff0b0a39882260a07608d9053adeddb98','0xb700d81a2dae2b48ae7c4bb1489a0ebcaf1d494706cdb01176b976b58d54b993',NULL,NULL),(21,10775961,'2026-05-02 22:14:25.411808',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createAndDispatchShipment',10000000000,368818,NULL,'SUCCESS','2026-05-02 22:14:25.405188','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x35da3db69ff7b50923c6c8076a1579686b1032cf3cc532f57ebec5751dfa5d59',NULL,NULL),(23,10775999,'2026-05-02 22:22:24.905252',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createBatchWithItems',10000000000,443292,NULL,'SUCCESS','2026-05-02 22:22:24.902287','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e',NULL,NULL),(24,10776005,'2026-05-02 22:23:37.606796',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createShipment',10000000000,368818,NULL,'SUCCESS','2026-05-02 22:23:37.605395','0xddd3052ff0b0a39882260a07608d9053adeddb98','0xc6418d334e122956646836b79038e147cdcecf88772bb5985f823db80fb7cad1',8,8),(25,10776010,'2026-05-02 22:24:48.648531',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','receiveShipment',10000000000,32197,NULL,'FAILED','2026-05-02 22:24:48.646892','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x1a641878a2e23a24c3ac613846e9fa1d319ccd6fc769e2e5543dd642eb56b96f',NULL,8),(26,10776066,'2026-05-02 22:36:48.864556',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createBatchWithItems',10000000000,443292,NULL,'SUCCESS','2026-05-02 22:36:48.861618','0xddd3052ff0b0a39882260a07608d9053adeddb98','0xb6e4837e3d053aafe10a9778cdc1695221cb3302a2e26bf2ae5a68274d0ee1e8',NULL,NULL),(27,10776067,'2026-05-02 22:37:00.991735',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createShipment',10000000000,414043,NULL,'SUCCESS','2026-05-02 22:37:00.987263','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x11a0c7a3801776632a9f43e171cef058302b81c3714945d077b1484f6d9127a6',29,9),(28,10776068,'2026-05-02 22:37:12.795615',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createBatchWithItems',10000000000,443292,NULL,'SUCCESS','2026-05-02 22:37:12.789783','0xddd3052ff0b0a39882260a07608d9053adeddb98','0xb4086de847760b9d3af7192ead9ce718c4b585873c9b6ff4a8764d40e0b76ef5',NULL,NULL),(29,10776069,'2026-05-02 22:37:37.781391',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createShipment',10000000000,414043,NULL,'SUCCESS','2026-05-02 22:37:37.776451','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x6ccbdc611b9e956cf34690737b3c480712c2b0d70320502d9867fefbf22d1d44',30,10),(30,10776070,'2026-05-02 22:38:00.869950',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createBatchWithItems',10000000000,443292,NULL,'SUCCESS','2026-05-02 22:38:00.868564','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x653a1b0d1007b9930fbab471f6ea1b9d22045a0cdba2447245cb643047d0b2fe',NULL,NULL),(31,10776071,'2026-05-02 22:38:14.474663',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createShipment',10000000000,414043,NULL,'SUCCESS','2026-05-02 22:38:14.473209','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x3ceb9f391c140dbb22aedf53d74c95bdd04fa0bb573f75c1bf1fc178e9a139d7',31,11),(32,10776072,'2026-05-02 22:38:24.840620',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createBatchWithItems',10000000000,443292,NULL,'SUCCESS','2026-05-02 22:38:24.838729','0xddd3052ff0b0a39882260a07608d9053adeddb98','0xe6e55f752f87c196b247fa351f5006d2b2deb9803e68903ffbe8aa4c91d68f1d',NULL,NULL),(33,10776073,'2026-05-02 22:38:37.155359',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createShipment',10000000000,414043,NULL,'SUCCESS','2026-05-02 22:38:37.154025','0xddd3052ff0b0a39882260a07608d9053adeddb98','0xa4d7d33a1665393f70cdade132ff3671fa145270822efe06aeeb3979b536d08e',32,12),(34,10776074,'2026-05-02 22:39:01.383055',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createBatchWithItems',10000000000,443292,NULL,'SUCCESS','2026-05-02 22:39:01.381022','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x03c0ab11fc25208ab8608d72dade8fac2a183f89d0f844f42e6c1c0c8f3367ab',NULL,NULL),(35,10776075,'2026-05-02 22:39:13.503015',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createShipment',10000000000,414043,NULL,'SUCCESS','2026-05-02 22:39:13.501627','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x475fd2afbbd0f8be33051220d3f425ad8b91e8e0c4bb42020e3330dbbf684bca',33,13),(36,10776076,'2026-05-02 22:39:25.234001',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createBatchWithItems',10000000000,443292,NULL,'SUCCESS','2026-05-02 22:39:25.231631','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x4c3e4ab9513089993a3f9025dc8aa1ae3f2dc22ad224145251c085ed4d4787b4',NULL,NULL),(37,10776077,'2026-05-02 22:39:37.310050',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createShipment',10000000000,414043,NULL,'SUCCESS','2026-05-02 22:39:37.304474','0xddd3052ff0b0a39882260a07608d9053adeddb98','0xc4d577b20b7625bd496baceb5d44998c5213bdd70cecc14325dea437526ee53e',34,14),(38,10776078,'2026-05-02 22:39:49.031796',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createBatchWithItems',10000000000,443292,NULL,'SUCCESS','2026-05-02 22:39:49.030459','0xddd3052ff0b0a39882260a07608d9053adeddb98','0xc97bef8eeb7cce39858d706d53f529a1ba14739f70f076b5109f5453fcf86b69',NULL,NULL),(39,10776079,'2026-05-02 22:40:01.316812',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createShipment',10000000000,414043,NULL,'SUCCESS','2026-05-02 22:40:01.314429','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x0be007dafbed5f0da3c98ca704ec46e814a960a95d6dfc32b6a31528daaa8d7b',35,15),(40,10776080,'2026-05-02 22:40:13.062466',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createBatchWithItems',10000000000,443292,NULL,'SUCCESS','2026-05-02 22:40:13.061322','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x08501b58be8bd5012b245a98c29bc6f60c1cce023339675cff766622b4a0c664',NULL,NULL),(41,10776081,'2026-05-02 22:40:25.356128',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createShipment',10000000000,414043,NULL,'SUCCESS','2026-05-02 22:40:25.353136','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x19e16b35883ba1e972828564dc70e3998305f5b87450be6ee112fd847b2cd7f7',36,16),(42,10776082,'2026-05-02 22:40:38.224239',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createBatchWithItems',10000000000,443292,NULL,'SUCCESS','2026-05-02 22:40:38.220969','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x9bc369963920a1edfd92591e077e0424da7c08b1172e64b587045e54ea374b3f',NULL,NULL),(43,10776083,'2026-05-02 22:40:50.354417',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createShipment',10000000000,414043,NULL,'SUCCESS','2026-05-02 22:40:50.352781','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x804f1af94b52437927e644a89967746e7be1ffd7cbef7a4b97862ab4aef939a0',37,17),(44,10776084,'2026-05-02 22:41:02.063353',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createBatchWithItems',10000000000,443292,NULL,'SUCCESS','2026-05-02 22:41:02.060060','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x14839f2c1434329918fe11f3be2654e0dfde0d17eb56a81403b44d65d942ce15',NULL,NULL),(45,10903206,'2026-05-23 14:24:24.982024',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createBatchWithItems',2000000000,443220,NULL,'SUCCESS','2026-05-23 14:24:24.977347','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b',NULL,NULL),(46,10903220,'2026-05-23 14:27:24.832910',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createShipment',2000000000,371192,NULL,'SUCCESS','2026-05-23 14:27:24.830740','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x4f918f86852823ae34966e40dd14177970cbb19fb737426499f20535f0519b97',40,19),(47,10903256,'2026-05-23 14:34:37.368515',NULL,NULL,'0x6e30cf86d35fb6a5b541ae43019d962e86338e9d','createAndDispatchShipment',2000000000,46445,NULL,'FAILED','2026-05-23 14:34:37.365348','0xddd3052ff0b0a39882260a07608d9053adeddb98','0x4a676380fc32691727fb03292086093953518cc6d096460a7898bda518e17b1f',NULL,NULL);
+/*!40000 ALTER TABLE `blockchain_transactions` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc bảng cho bảng `disease_categories`
+-- Table structure for table `disease_categories`
 --
 
+DROP TABLE IF EXISTS `disease_categories`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `disease_categories` (
-  `id` int(11) NOT NULL,
+  `id` int NOT NULL AUTO_INCREMENT,
   `created_at` datetime(6) NOT NULL,
-  `description` text DEFAULT NULL,
-  `icd10_code` varchar(20) DEFAULT NULL,
+  `description` text COLLATE utf8mb4_general_ci,
+  `icd10_code` varchar(20) COLLATE utf8mb4_general_ci DEFAULT NULL,
   `is_chronic` bit(1) NOT NULL,
   `is_contagious` bit(1) NOT NULL,
   `is_hereditary` bit(1) NOT NULL,
-  `name` varchar(200) NOT NULL,
-  `severity_level` enum('critical','mild','moderate','severe') DEFAULT NULL,
-  `specialty_id` int(11) DEFAULT NULL
+  `name` varchar(200) COLLATE utf8mb4_general_ci NOT NULL,
+  `severity_level` enum('critical','mild','moderate','severe') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `specialty_id` int DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `FKs57ajxig1nh76dtsynjj424yn` (`specialty_id`),
+  CONSTRAINT `FKs57ajxig1nh76dtsynjj424yn` FOREIGN KEY (`specialty_id`) REFERENCES `medical_specialties` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc bảng cho bảng `dispense_instructions`
+-- Dumping data for table `disease_categories`
 --
 
+LOCK TABLES `disease_categories` WRITE;
+/*!40000 ALTER TABLE `disease_categories` DISABLE KEYS */;
+/*!40000 ALTER TABLE `disease_categories` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `dispense_instructions`
+--
+
+DROP TABLE IF EXISTS `dispense_instructions`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `dispense_instructions` (
-  `id` bigint(20) NOT NULL,
-  `batch_number` varchar(100) DEFAULT NULL,
-  `contraindications` text DEFAULT NULL,
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `batch_number` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `contraindications` text COLLATE utf8mb4_general_ci,
   `created_at` datetime(6) NOT NULL,
-  `customer_app_user_id` bigint(20) DEFAULT NULL,
-  `customer_name` varchar(100) DEFAULT NULL,
-  `customer_phone` varchar(20) DEFAULT NULL,
+  `customer_app_user_id` bigint DEFAULT NULL,
+  `customer_name` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `customer_phone` varchar(20) COLLATE utf8mb4_general_ci DEFAULT NULL,
   `dispensed_at` datetime(6) DEFAULT NULL,
-  `dosage` varchar(50) DEFAULT NULL,
-  `drug_name` varchar(255) NOT NULL,
-  `duration_days` int(11) DEFAULT NULL,
-  `frequency` int(11) DEFAULT NULL,
-  `item_code` varchar(100) DEFAULT NULL,
-  `meal_relation` enum('AFTER','ANY','BEFORE','WITH') DEFAULT NULL,
-  `movement_id` bigint(20) DEFAULT NULL,
-  `pharmacist_license` varchar(50) DEFAULT NULL,
-  `pharmacist_name` varchar(100) DEFAULT NULL,
-  `pharmacy_id` bigint(20) NOT NULL,
-  `product_item_id` bigint(20) NOT NULL,
+  `dosage` varchar(50) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `drug_name` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `duration_days` int DEFAULT NULL,
+  `frequency` int DEFAULT NULL,
+  `item_code` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `meal_relation` enum('AFTER','ANY','BEFORE','WITH') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `movement_id` bigint DEFAULT NULL,
+  `pharmacist_license` varchar(50) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `pharmacist_name` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `pharmacy_id` bigint NOT NULL,
+  `product_item_id` bigint NOT NULL,
   `sale_price` decimal(15,2) DEFAULT NULL,
-  `special_notes` text DEFAULT NULL,
-  `specific_times` varchar(100) DEFAULT NULL,
+  `special_notes` text COLLATE utf8mb4_general_ci,
+  `specific_times` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
   `updated_at` datetime(6) DEFAULT NULL,
-  `warnings` text DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+  `warnings` text COLLATE utf8mb4_general_ci,
+  PRIMARY KEY (`id`),
+  KEY `FK71iej3cfeq289mji8fodpx7r7` (`customer_app_user_id`),
+  KEY `FKcv89b3tglirm3lxbdrevl79qx` (`product_item_id`),
+  CONSTRAINT `FK71iej3cfeq289mji8fodpx7r7` FOREIGN KEY (`customer_app_user_id`) REFERENCES `app_users` (`id`),
+  CONSTRAINT `FKcv89b3tglirm3lxbdrevl79qx` FOREIGN KEY (`product_item_id`) REFERENCES `product_items` (`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=8 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `dispense_instructions`
+-- Dumping data for table `dispense_instructions`
 --
 
-INSERT INTO `dispense_instructions` (`id`, `batch_number`, `contraindications`, `created_at`, `customer_app_user_id`, `customer_name`, `customer_phone`, `dispensed_at`, `dosage`, `drug_name`, `duration_days`, `frequency`, `item_code`, `meal_relation`, `movement_id`, `pharmacist_license`, `pharmacist_name`, `pharmacy_id`, `product_item_id`, `sale_price`, `special_notes`, `specific_times`, `updated_at`, `warnings`) VALUES
-(3, 'BT202602262049', NULL, '2026-02-27 09:33:15.000000', NULL, NULL, NULL, '2026-02-27 09:33:15.000000', '1 viên', 'Azithromycin 500mg', 3, 2, 'AN500-7030250', 'AFTER', 491, NULL, 'Hoa', 1, 501, NULL, 'Uống từ từ', '012:00,19:00', '2026-02-27 09:33:15.000000', NULL);
-
--- --------------------------------------------------------
-
---
--- Cấu trúc bảng cho bảng `distributors`
---
-
-CREATE TABLE `distributors` (
-  `id` bigint(20) NOT NULL,
-  `address` varchar(500) NOT NULL,
-  `contact_person` varchar(100) DEFAULT NULL,
-  `created_at` datetime(6) NOT NULL,
-  `description` varchar(1000) DEFAULT NULL,
-  `email` varchar(100) DEFAULT NULL,
-  `license_number` varchar(50) DEFAULT NULL,
-  `name` varchar(255) NOT NULL,
-  `phone` varchar(20) DEFAULT NULL,
-  `status` enum('ACTIVE','INACTIVE','SUSPENDED') NOT NULL,
-  `updated_at` datetime(6) DEFAULT NULL,
-  `wallet_address` varchar(42) DEFAULT NULL,
-  `website` varchar(255) DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
+LOCK TABLES `dispense_instructions` WRITE;
+/*!40000 ALTER TABLE `dispense_instructions` DISABLE KEYS */;
+INSERT INTO `dispense_instructions` VALUES (3,'BT202602262049',NULL,'2026-02-27 09:33:15.000000',NULL,NULL,NULL,'2026-02-27 09:33:15.000000','1 viên','Azithromycin 500mg',3,2,'AN500-7030250','AFTER',491,NULL,'Hoa',1,501,NULL,'Uống từ từ','012:00,19:00','2026-02-27 09:33:15.000000',NULL),(4,'BT202605012325',NULL,'2026-05-25 20:01:16.645108',NULL,'ABC','','2026-05-25 20:01:16.638414','Theo chỉ định','Cefixim 200mg',1,1,'CM200-3294077','ANY',890,NULL,'Dược sĩ Demo',1,35,120000.00,'','','2026-05-25 20:01:16.645108',NULL),(5,'BT202605020004',NULL,'2026-05-25 20:03:15.900451',NULL,'ABC','','2026-05-25 20:03:15.900223','Theo chỉ định','Cefixim 200mg',1,1,'CM200-9431676','ANY',891,NULL,'Dược sĩ Demo',1,61,150000.00,'','','2026-05-25 20:03:15.900451',NULL),(6,'BT202605231424',NULL,'2026-05-25 20:05:13.949858',NULL,'ABC','','2026-05-25 20:05:13.949607','Theo chỉ định','Biosubtyl-II',1,1,'BI-1503797','ANY',892,NULL,'Dược sĩ Demo',1,215,80000.00,'','','2026-05-25 20:05:13.949858',NULL),(7,'BT202605231424',NULL,'2026-05-25 20:13:49.934972',NULL,'ABC','','2026-05-25 20:13:49.931592','Theo chỉ định','Biosubtyl-II',1,1,'BI-4637160','ANY',893,NULL,'Dược sĩ Demo',1,218,20000.00,'','','2026-05-25 20:13:49.934972',NULL);
+/*!40000 ALTER TABLE `dispense_instructions` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc bảng cho bảng `distributor_inventory`
+-- Table structure for table `distributor_inventory`
 --
 
+DROP TABLE IF EXISTS `distributor_inventory`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `distributor_inventory` (
-  `id` bigint(20) NOT NULL,
-  `distributor_id` bigint(20) NOT NULL COMMENT 'FK to pharma_companies (DISTRIBUTOR)',
-  `batch_id` bigint(20) NOT NULL COMMENT 'FK to drug_batches',
-  `drug_name` varchar(255) NOT NULL,
-  `manufacturer` varchar(255) NOT NULL,
-  `batch_number` varchar(100) NOT NULL,
-  `quantity` int(11) NOT NULL DEFAULT 0 COMMENT 'Số lượng hiện có trong kho',
-  `reserved_quantity` int(11) NOT NULL DEFAULT 0 COMMENT 'Số lượng đã được đặt trước/đang chờ xuất',
-  `available_quantity` int(11) GENERATED ALWAYS AS (`quantity` - `reserved_quantity`) STORED COMMENT 'Số lượng có thể xuất',
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `distributor_id` bigint NOT NULL COMMENT 'FK to pharma_companies (DISTRIBUTOR)',
+  `batch_id` bigint NOT NULL COMMENT 'FK to drug_batches',
+  `drug_name` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `manufacturer` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `batch_number` varchar(100) COLLATE utf8mb4_general_ci NOT NULL,
+  `quantity` int NOT NULL DEFAULT '0' COMMENT 'Số lượng hiện có trong kho',
+  `reserved_quantity` int NOT NULL DEFAULT '0' COMMENT 'Số lượng đã được đặt trước/đang chờ xuất',
+  `available_quantity` int GENERATED ALWAYS AS ((`quantity` - `reserved_quantity`)) STORED COMMENT 'Số lượng có thể xuất',
   `manufacture_date` timestamp NULL DEFAULT NULL,
   `expiry_date` timestamp NULL DEFAULT NULL,
-  `qr_code` varchar(1000) DEFAULT NULL,
-  `warehouse_location` varchar(100) DEFAULT 'Kho chính' COMMENT 'Vị trí trong kho: Kho A, Kệ B1, v.v.',
-  `storage_conditions` varchar(500) DEFAULT NULL,
-  `storage_temperature` varchar(50) DEFAULT NULL COMMENT 'Nhiệt độ bảo quản',
-  `unit_price` decimal(15,2) DEFAULT 0.00 COMMENT 'Giá nhập (từ NSX)',
-  `selling_price` decimal(15,2) DEFAULT 0.00 COMMENT 'Giá bán (cho hiệu thuốc)',
-  `total_value` decimal(15,2) GENERATED ALWAYS AS (`quantity` * `unit_price`) STORED,
-  `status` enum('GOOD','LOW_STOCK','EXPIRING_SOON','EXPIRED','QUARANTINE') DEFAULT 'GOOD',
-  `min_stock_level` int(11) DEFAULT 100 COMMENT 'Ngưỡng tồn kho tối thiểu',
-  `max_stock_level` int(11) DEFAULT 10000 COMMENT 'Ngưỡng tồn kho tối đa',
+  `qr_code` varchar(1000) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `warehouse_location` varchar(100) COLLATE utf8mb4_general_ci DEFAULT 'Kho chính' COMMENT 'Vị trí trong kho: Kho A, Kệ B1, v.v.',
+  `storage_conditions` varchar(500) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `storage_temperature` varchar(50) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT 'Nhiệt độ bảo quản',
+  `unit_price` decimal(15,2) DEFAULT '0.00' COMMENT 'Giá nhập (từ NSX)',
+  `selling_price` decimal(15,2) DEFAULT '0.00' COMMENT 'Giá bán (cho hiệu thuốc)',
+  `total_value` decimal(15,2) GENERATED ALWAYS AS ((`quantity` * `unit_price`)) STORED,
+  `status` enum('GOOD','LOW_STOCK','EXPIRING_SOON','EXPIRED','QUARANTINE') COLLATE utf8mb4_general_ci DEFAULT 'GOOD',
+  `min_stock_level` int DEFAULT '100' COMMENT 'Ngưỡng tồn kho tối thiểu',
+  `max_stock_level` int DEFAULT '10000' COMMENT 'Ngưỡng tồn kho tối đa',
   `blockchain_batch_id` decimal(38,0) DEFAULT NULL COMMENT 'ID lô trên blockchain',
-  `receive_tx_hash` varchar(66) DEFAULT NULL COMMENT 'TX hash khi nhận hàng',
-  `current_owner_address` varchar(42) DEFAULT NULL COMMENT 'Địa chỉ ví blockchain',
-  `received_from_company_id` bigint(20) DEFAULT NULL COMMENT 'Nhận từ công ty nào (thường là NSX)',
-  `received_shipment_id` bigint(20) DEFAULT NULL COMMENT 'FK to drug_shipments',
+  `receive_tx_hash` varchar(66) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT 'TX hash khi nhận hàng',
+  `current_owner_address` varchar(42) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT 'Địa chỉ ví blockchain',
+  `received_from_company_id` bigint DEFAULT NULL COMMENT 'Nhận từ công ty nào (thường là NSX)',
+  `received_shipment_id` bigint DEFAULT NULL COMMENT 'FK to drug_shipments',
   `received_date` timestamp NULL DEFAULT NULL,
-  `received_quantity` int(11) DEFAULT 0 COMMENT 'Số lượng nhập ban đầu',
-  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
-  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
-  `created_by` varchar(36) DEFAULT NULL,
-  `updated_by` varchar(36) DEFAULT NULL,
-  `notes` text DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Quản lý kho của nhà phân phối';
+  `received_quantity` int DEFAULT '0' COMMENT 'Số lượng nhập ban đầu',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `created_by` varchar(36) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `updated_by` varchar(36) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `notes` text COLLATE utf8mb4_general_ci,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_distributor_batch` (`distributor_id`,`batch_id`),
+  KEY `idx_distributor_id` (`distributor_id`),
+  KEY `idx_batch_id` (`batch_id`),
+  KEY `idx_status` (`status`),
+  KEY `idx_expiry_date` (`expiry_date`),
+  KEY `idx_available_quantity` (`available_quantity`),
+  KEY `fk_dist_inv_received_from` (`received_from_company_id`),
+  KEY `fk_dist_inv_shipment` (`received_shipment_id`),
+  CONSTRAINT `fk_dist_inv_batch` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_dist_inv_distributor` FOREIGN KEY (`distributor_id`) REFERENCES `pharma_companies` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_dist_inv_received_from` FOREIGN KEY (`received_from_company_id`) REFERENCES `pharma_companies` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_dist_inv_shipment` FOREIGN KEY (`received_shipment_id`) REFERENCES `drug_shipments` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB AUTO_INCREMENT=21 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Quản lý kho của nhà phân phối';
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `distributor_inventory`
+-- Dumping data for table `distributor_inventory`
 --
 
-INSERT INTO `distributor_inventory` (`id`, `distributor_id`, `batch_id`, `drug_name`, `manufacturer`, `batch_number`, `quantity`, `reserved_quantity`, `manufacture_date`, `expiry_date`, `qr_code`, `warehouse_location`, `storage_conditions`, `storage_temperature`, `unit_price`, `selling_price`, `status`, `min_stock_level`, `max_stock_level`, `blockchain_batch_id`, `receive_tx_hash`, `current_owner_address`, `received_from_company_id`, `received_shipment_id`, `received_date`, `received_quantity`, `created_at`, `updated_at`, `created_by`, `updated_by`, `notes`) VALUES
-(8, 3, 96, 'Azithromycin 500mg', 'Dược Hậu Giang', 'BT202602262049', 5, 0, '2026-02-26 13:49:58', '2028-02-26 16:59:59', 'NCKH-PHARMA-3EF547F65715D3-BT202602262049', 'Kho chính', NULL, NULL, 0.00, 0.00, 'GOOD', 100, 10000, 17721137980446163, NULL, '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC', 1, 62, '2026-02-26 14:28:45', 5, '2026-02-26 14:28:45', '2026-02-26 14:28:45', NULL, NULL, NULL),
-(9, 3, 98, 'Klamentin 1g', 'Dược Hậu Giang', 'BT202603091219', 5, 0, '2026-03-09 05:19:01', '2028-03-09 16:59:59', 'NCKH-PHARMA-3EFDA568234FBC-BT202603091219', 'Kho chính', NULL, NULL, 0.00, 0.00, 'GOOD', 100, 10000, 17730335414636476, NULL, '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC', 1, 65, '2026-03-25 08:03:50', 5, '2026-03-25 08:03:50', '2026-03-25 08:03:50', NULL, NULL, NULL);
+LOCK TABLES `distributor_inventory` WRITE;
+/*!40000 ALTER TABLE `distributor_inventory` DISABLE KEYS */;
+INSERT INTO `distributor_inventory` (`id`, `distributor_id`, `batch_id`, `drug_name`, `manufacturer`, `batch_number`, `quantity`, `reserved_quantity`, `manufacture_date`, `expiry_date`, `qr_code`, `warehouse_location`, `storage_conditions`, `storage_temperature`, `unit_price`, `selling_price`, `status`, `min_stock_level`, `max_stock_level`, `blockchain_batch_id`, `receive_tx_hash`, `current_owner_address`, `received_from_company_id`, `received_shipment_id`, `received_date`, `received_quantity`, `created_at`, `updated_at`, `created_by`, `updated_by`, `notes`) VALUES (8,3,96,'Azithromycin 500mg','Dược Hậu Giang','BT202602262049',5,0,'2026-02-26 13:49:58','2028-02-26 16:59:59','NCKH-PHARMA-3EF547F65715D3-BT202602262049','Kho chính',NULL,NULL,0.00,0.00,'GOOD',100,10000,17721137980446163,NULL,'0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',1,62,'2026-02-26 14:28:45',5,'2026-02-26 14:28:45','2026-02-26 14:28:45',NULL,NULL,NULL),(9,3,98,'Klamentin 1g','Dược Hậu Giang','BT202603091219',5,0,'2026-03-09 05:19:01','2028-03-09 16:59:59','NCKH-PHARMA-3EFDA568234FBC-BT202603091219','Kho chính',NULL,NULL,0.00,0.00,'GOOD',100,10000,17730335414636476,NULL,'0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',1,65,'2026-03-25 08:03:50',5,'2026-03-25 08:03:50','2026-03-25 08:03:50',NULL,NULL,NULL),(10,3,99,'Augmentin 1g','Dược Hậu Giang','BT202603251447',1,0,'2026-03-25 14:47:07','2028-03-31 23:59:59','NCKH-PHARMA-3F0A4CBF6C90D1-BT202603251447','Kho chính',NULL,NULL,0.00,0.00,'GOOD',100,10000,17744248278126801,NULL,'0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',1,67,'2026-04-27 12:55:01',1,'2026-04-27 12:55:01','2026-04-27 12:55:01',NULL,NULL,NULL),(11,4,100,'Klamentin 625','Dược Hậu Giang','BT202603251500',5,0,'2026-03-25 15:00:37','2028-03-25 23:59:59','NCKH-PHARMA-3F0A4EA1D90DAB-BT202603251500','Kho chính',NULL,NULL,0.00,0.00,'GOOD',100,10000,17744256371854763,NULL,'0x90F79bf6EB2c4f870365E785982E1f101E93b906',1,70,'2026-04-29 09:59:00',5,'2026-04-29 09:59:00','2026-04-29 09:59:00',NULL,NULL,NULL),(12,3,1,'Zinnat 500mg','Dược Hậu Giang','BT202604291059',26,0,'2026-04-29 10:59:34','2029-09-25 23:59:59','NCKH-PHARMA-3F25ADC19ED095-BT202604291059','Kho chính',NULL,NULL,0.00,0.00,'LOW_STOCK',100,10000,6,NULL,'0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',1,1,'2026-04-29 11:06:05',13,'2026-04-29 11:01:25','2026-04-29 11:06:05',NULL,NULL,NULL),(13,3,3,'Cefixim 200mg','Dược Hậu Giang','BT202605012325',2,0,'2026-05-01 23:25:56','2028-03-20 23:59:59','NCKH-PHARMA-3F27A85A95EE14-BT202605012325','Kho chính',NULL,NULL,0.00,0.00,'GOOD',100,10000,8,NULL,'0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',1,3,'2026-05-01 23:28:08',2,'2026-05-01 23:28:08','2026-05-01 23:28:08',NULL,NULL,NULL),(14,3,4,'Medoclav 1g','Dược Hậu Giang','BT202605012341',23,0,'2026-05-01 23:41:10','2028-04-23 23:59:59','NCKH-PHARMA-3F27AA7B6B4913-BT202605012341','Kho chính',NULL,NULL,0.00,0.00,'GOOD',100,10000,9,NULL,'0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',1,4,'2026-05-01 23:41:53',23,'2026-05-01 23:41:53','2026-05-01 23:41:53',NULL,NULL,NULL),(15,3,5,'Cefixim 200mg','Dược Hậu Giang','BT202605020004',25,0,'2026-05-02 00:04:30','2029-05-25 23:59:59','NCKH-PHARMA-3F27ADBDF3735A-BT202605020004','Kho chính',NULL,NULL,0.00,0.00,'GOOD',100,10000,10,NULL,'0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',1,5,'2026-05-02 00:05:45',25,'2026-05-02 00:05:45','2026-05-02 00:05:45',NULL,NULL,NULL),(16,3,2,'Cefixim 200mg','Dược Hậu Giang','BT202604302225',20,0,'2026-04-30 22:25:49','2029-03-20 23:59:59','NCKH-PHARMA-3F26D6CA238F0E-BT202604302225','Kho chính',NULL,NULL,0.00,0.00,'GOOD',100,10000,7,NULL,'0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',1,6,'2026-05-02 00:12:16',20,'2026-05-02 00:12:16','2026-05-02 00:12:16',NULL,NULL,NULL),(17,3,7,'Klamentin 625','Dược Hậu Giang','BT202605022211',14,0,'2026-05-02 22:12:00','2028-05-14 23:59:59','NCKH-PHARMA-3F286730CDC269-BT202605022211','Kho chính',NULL,NULL,0.00,0.00,'GOOD',100,10000,12,NULL,'0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',1,7,'2026-05-02 22:15:15',14,'2026-05-02 22:15:15','2026-05-02 22:15:15',NULL,NULL,NULL),(18,3,8,'Azithromycin 500mg','Dược Hậu Giang','BT202605022222',46,0,'2026-05-02 22:22:22','2028-03-12 23:59:59','NCKH-PHARMA-3F2868A3E1F617-BT202605022222','Kho chính',NULL,NULL,0.00,0.00,'LOW_STOCK',100,10000,13,NULL,'0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',1,8,'2026-05-02 22:32:03',23,'2026-05-02 22:24:49','2026-05-02 22:32:03',NULL,NULL,NULL),(19,3,29,'Azithromycin 500mg','Dược Hậu Giang','BATCH-1777736202-1',5,0,'2026-05-02 22:36:43','2027-05-02 23:59:59','NCKH-PHARMA-3F286AA4C498B9-BATCH-1777736202-1','Kho chính',NULL,NULL,0.00,0.00,'GOOD',100,10000,14,NULL,'0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',1,9,'2026-05-02 22:37:51',5,'2026-05-02 22:37:51','2026-05-02 22:37:51',NULL,NULL,NULL),(20,4,40,'Biosubtyl-II','Dược Hậu Giang','BT202605231424',100,0,'2026-05-23 14:24:11','2027-02-20 23:59:59','NCKH-PHARMA-3F38A65140F79C-BT202605231424','Kho chính',NULL,NULL,0.00,0.00,'GOOD',100,10000,24,NULL,'0x90F79bf6EB2c4f870365E785982E1f101E93b906',1,19,'2026-05-23 14:33:01',100,'2026-05-23 14:33:01','2026-05-23 14:33:01',NULL,NULL,NULL);
+/*!40000 ALTER TABLE `distributor_inventory` ENABLE KEYS */;
+UNLOCK TABLES;
+/*!50003 SET @saved_cs_client      = @@character_set_client */ ;
+/*!50003 SET @saved_cs_results     = @@character_set_results */ ;
+/*!50003 SET @saved_col_connection = @@collation_connection */ ;
+/*!50003 SET character_set_client  = utf8mb4 */ ;
+/*!50003 SET character_set_results = utf8mb4 */ ;
+/*!50003 SET collation_connection  = utf8mb4_0900_ai_ci */ ;
+/*!50003 SET @saved_sql_mode       = @@sql_mode */ ;
+/*!50003 SET sql_mode              = 'NO_AUTO_VALUE_ON_ZERO' */ ;
+DELIMITER ;;
+/*!50003 CREATE*/ /*!50017 DEFINER=`root`@`localhost`*/ /*!50003 TRIGGER `trg_distributor_inventory_status_update` BEFORE UPDATE ON `distributor_inventory` FOR EACH ROW BEGIN
+    DECLARE days_to_expiry INT;
+    SET days_to_expiry = DATEDIFF(NEW.expiry_date, NOW());
 
---
--- Bẫy `distributor_inventory`
---
-DELIMITER $$
-CREATE TRIGGER `trg_distributor_inventory_movement_log` AFTER UPDATE ON `distributor_inventory` FOR EACH ROW BEGIN
+    
+    IF days_to_expiry < 0 THEN
+        SET NEW.status = 'EXPIRED';
+    
+    ELSEIF days_to_expiry <= 30 THEN
+        SET NEW.status = 'EXPIRING_SOON';
+    
+    ELSEIF NEW.available_quantity <= NEW.min_stock_level THEN
+        SET NEW.status = 'LOW_STOCK';
+    ELSE
+        SET NEW.status = 'GOOD';
+    END IF;
+END */;;
+DELIMITER ;
+/*!50003 SET sql_mode              = @saved_sql_mode */ ;
+/*!50003 SET character_set_client  = @saved_cs_client */ ;
+/*!50003 SET character_set_results = @saved_cs_results */ ;
+/*!50003 SET collation_connection  = @saved_col_connection */ ;
+/*!50003 SET @saved_cs_client      = @@character_set_client */ ;
+/*!50003 SET @saved_cs_results     = @@character_set_results */ ;
+/*!50003 SET @saved_col_connection = @@collation_connection */ ;
+/*!50003 SET character_set_client  = utf8mb4 */ ;
+/*!50003 SET character_set_results = utf8mb4 */ ;
+/*!50003 SET collation_connection  = utf8mb4_0900_ai_ci */ ;
+/*!50003 SET @saved_sql_mode       = @@sql_mode */ ;
+/*!50003 SET sql_mode              = 'NO_AUTO_VALUE_ON_ZERO' */ ;
+DELIMITER ;;
+/*!50003 CREATE*/ /*!50017 DEFINER=`root`@`localhost`*/ /*!50003 TRIGGER `trg_distributor_inventory_movement_log` AFTER UPDATE ON `distributor_inventory` FOR EACH ROW BEGIN
     IF OLD.quantity != NEW.quantity THEN
         INSERT INTO `inventory_movements` (
             `inventory_type`,
@@ -561,558 +427,809 @@ CREATE TRIGGER `trg_distributor_inventory_movement_log` AFTER UPDATE ON `distrib
             NOW()
         );
     END IF;
-END
-$$
+END */;;
 DELIMITER ;
-DELIMITER $$
-CREATE TRIGGER `trg_distributor_inventory_status_update` BEFORE UPDATE ON `distributor_inventory` FOR EACH ROW BEGIN
-    DECLARE days_to_expiry INT;
-    SET days_to_expiry = DATEDIFF(NEW.expiry_date, NOW());
-
-    -- Kiểm tra hết hạn
-    IF days_to_expiry < 0 THEN
-        SET NEW.status = 'EXPIRED';
-    -- Sắp hết hạn (30 ngày)
-    ELSEIF days_to_expiry <= 30 THEN
-        SET NEW.status = 'EXPIRING_SOON';
-    -- Tồn kho thấp
-    ELSEIF NEW.available_quantity <= NEW.min_stock_level THEN
-        SET NEW.status = 'LOW_STOCK';
-    ELSE
-        SET NEW.status = 'GOOD';
-    END IF;
-END
-$$
-DELIMITER ;
-
--- --------------------------------------------------------
+/*!50003 SET sql_mode              = @saved_sql_mode */ ;
+/*!50003 SET character_set_client  = @saved_cs_client */ ;
+/*!50003 SET character_set_results = @saved_cs_results */ ;
+/*!50003 SET collation_connection  = @saved_col_connection */ ;
 
 --
--- Cấu trúc bảng cho bảng `distributor_users`
+-- Table structure for table `distributor_users`
 --
 
+DROP TABLE IF EXISTS `distributor_users`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `distributor_users` (
-  `id` varchar(36) NOT NULL,
-  `company_address` varchar(500) DEFAULT NULL,
-  `company_name` varchar(255) DEFAULT NULL,
+  `id` varchar(36) COLLATE utf8mb4_general_ci NOT NULL,
+  `company_address` varchar(500) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `company_name` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
   `created_at` datetime(6) NOT NULL,
-  `email` varchar(255) NOT NULL,
+  `email` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
   `is_active` bit(1) NOT NULL,
   `is_profile_complete` bit(1) NOT NULL,
   `is_verified` bit(1) NOT NULL,
   `last_login_at` datetime(6) DEFAULT NULL,
   `license_expiry_date` datetime(6) DEFAULT NULL,
-  `license_number` varchar(50) DEFAULT NULL,
-  `name` varchar(255) DEFAULT NULL,
-  `password_hash` varchar(255) NOT NULL,
-  `phone_number` varchar(20) DEFAULT NULL,
-  `role` enum('DISTRIBUTOR','MANUFACTURER','PHARMACY') NOT NULL,
+  `license_number` varchar(50) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `name` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `password_hash` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `phone_number` varchar(20) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `role` enum('DISTRIBUTOR','MANUFACTURER','PHARMACY') COLLATE utf8mb4_general_ci NOT NULL,
   `updated_at` datetime(6) DEFAULT NULL,
-  `wallet_address` varchar(42) DEFAULT NULL
+  `wallet_address` varchar(42) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UKmpvt4be3vwqcoed0ovvdh7jil` (`email`),
+  UNIQUE KEY `idx_email` (`email`),
+  UNIQUE KEY `idx_email_dist` (`email`),
+  UNIQUE KEY `unique_distributor_wallet` (`wallet_address`),
+  KEY `idx_wallet_address` (`wallet_address`),
+  KEY `idx_wallet_address_dist` (`wallet_address`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `distributor_users`
+-- Dumping data for table `distributor_users`
 --
 
-INSERT INTO `distributor_users` (`id`, `company_address`, `company_name`, `created_at`, `email`, `is_active`, `is_profile_complete`, `is_verified`, `last_login_at`, `license_expiry_date`, `license_number`, `name`, `password_hash`, `phone_number`, `role`, `updated_at`, `wallet_address`) VALUES
-('dist-001-uuid', '789 Đường GHI, Quận 3, TP.HCM', 'Nhà phân phối CPC1 Hà Nội', '2025-09-29 19:00:12.000000', 'distributor@demo.com', b'1', b'1', b'1', '2026-03-25 14:43:49.000000', NULL, NULL, 'Nguyễn Văn A', '$2a$10$jPOq3CIOWI89C2gqoZRypeZLe93ZcmKjJXE1qQQ1jk9Shvw/jJ3Cm', '0903456789', 'DISTRIBUTOR', '2026-03-25 14:43:49.000000', '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC'),
-('dist-002-uuid', '321 Đường JKL, Quận 7, TP.HCM', 'Zuellig Pharma Vietnam', '2025-09-29 19:00:12.000000', 'zuellig@demo.com', b'1', b'1', b'1', NULL, NULL, NULL, 'Trần Thị Zuellig', '$2a$10$LYes.J77LJsTVkcrK.Eea.CzbAosv/MhaWbPx5KZoIGwriBg3rIfq', '0904567890', 'DISTRIBUTOR', NULL, '0x90F79bf6EB2c4f870365E785982E1f101E93b906');
-
--- --------------------------------------------------------
+LOCK TABLES `distributor_users` WRITE;
+/*!40000 ALTER TABLE `distributor_users` DISABLE KEYS */;
+INSERT INTO `distributor_users` VALUES ('4fbcb239-fc46-484f-83ef-ea734a947b37',NULL,'Doanh nghiệp B','2026-04-28 01:04:30.717668','doanhnghiepb@gmail.com',_binary '',_binary '\0',_binary '\0','2026-04-28 01:04:57.523955',NULL,NULL,'Nguyễn Văn B','$2a$10$U35CGBY69BuI/3fR3/YtG.7xK1wOuYyC.x/rPSthb6Rh4ck43bp0.',NULL,'DISTRIBUTOR','2026-05-23 15:07:33.992794','0x123'),('dist-001-uuid','789 Đường GHI, Quận 3, TP.HCM','Nhà phân phối CPC1 Hà Nội','2025-09-29 19:00:12.000000','distributor@demo.com',_binary '',_binary '',_binary '','2026-05-23 14:31:42.488422',NULL,NULL,'Nguyễn Văn A','$2a$10$o3ABfhYYdNcB0H9AXvIYmO1zgHEbO0gYJ/6ydJUWrJZPIg8oFA4oK','0903456789','DISTRIBUTOR','2026-05-25 20:13:08.121814','0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC'),('dist-002-uuid','321 Đường JKL, Quận 7, TP.HCM','Zuellig Pharma Vietnam','2025-09-29 19:00:12.000000','zuellig@demo.com',_binary '',_binary '',_binary '','2026-05-23 14:32:20.275835',NULL,NULL,'Trần Thị Zuellig','$2a$10$5w2xRGiIGSDtvv09rEmcYuDttLmviovmIXBrQhQqQa14ZfFMc/Vda','0904567890','DISTRIBUTOR','2026-05-23 14:32:20.276986','0x90F79bf6EB2c4f870365E785982E1f101E93b906');
+/*!40000 ALTER TABLE `distributor_users` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc bảng cho bảng `drug_batches`
+-- Table structure for table `distributors`
 --
 
+DROP TABLE IF EXISTS `distributors`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `distributors` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `address` varchar(500) COLLATE utf8mb4_general_ci NOT NULL,
+  `contact_person` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL,
+  `description` varchar(1000) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `email` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `license_number` varchar(50) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `name` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `phone` varchar(20) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `status` enum('ACTIVE','INACTIVE','SUSPENDED') COLLATE utf8mb4_general_ci NOT NULL,
+  `updated_at` datetime(6) DEFAULT NULL,
+  `wallet_address` varchar(42) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `website` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UKck47qvoigd7gh59moffh0kub0` (`wallet_address`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `distributors`
+--
+
+LOCK TABLES `distributors` WRITE;
+/*!40000 ALTER TABLE `distributors` DISABLE KEYS */;
+/*!40000 ALTER TABLE `distributors` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `drug_batches`
+--
+
+DROP TABLE IF EXISTS `drug_batches`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `drug_batches` (
-  `id` bigint(20) NOT NULL,
+  `id` bigint NOT NULL AUTO_INCREMENT,
   `batch_id` decimal(38,0) NOT NULL,
-  `batch_number` varchar(100) NOT NULL,
+  `batch_number` varchar(100) COLLATE utf8mb4_general_ci NOT NULL,
   `block_number` decimal(38,0) DEFAULT NULL,
   `created_at` datetime(6) NOT NULL,
-  `current_owner` varchar(42) NOT NULL,
-  `drug_name` varchar(255) NOT NULL,
+  `current_owner` varchar(42) COLLATE utf8mb4_general_ci NOT NULL,
+  `drug_name` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
   `expiry_date` datetime(6) NOT NULL,
   `is_synced` bit(1) NOT NULL,
   `manufacture_timestamp` datetime(6) NOT NULL,
-  `manufacturer` varchar(255) NOT NULL,
-  `manufacturer_address` varchar(42) NOT NULL,
-  `qr_code` varchar(1000) DEFAULT NULL,
-  `quantity` bigint(20) NOT NULL,
-  `status` enum('DELIVERED','IN_TRANSIT','MANUFACTURED','SOLD') NOT NULL,
-  `storage_conditions` varchar(500) DEFAULT NULL,
-  `transaction_hash` varchar(66) DEFAULT NULL,
+  `manufacturer` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `manufacturer_address` varchar(42) COLLATE utf8mb4_general_ci NOT NULL,
+  `qr_code` varchar(1000) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `quantity` bigint NOT NULL,
+  `status` enum('DELIVERED','IN_TRANSIT','MANUFACTURED','SOLD','RECALLED') COLLATE utf8mb4_general_ci NOT NULL,
+  `storage_conditions` varchar(500) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `transaction_hash` varchar(66) COLLATE utf8mb4_general_ci DEFAULT NULL,
   `updated_at` datetime(6) DEFAULT NULL,
-  `items_merkle_root` varchar(66) DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+  `items_merkle_root` varchar(66) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `raw_material_batch_number` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `raw_material_amount_used` double DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UKt9md736g9fj8cosy0i1ewwaop` (`batch_id`),
+  KEY `idx_batch_id` (`batch_id`),
+  KEY `idx_qr_code` (`qr_code`(100)),
+  KEY `idx_manufacturer_address` (`manufacturer_address`),
+  KEY `idx_current_owner` (`current_owner`),
+  KEY `idx_status` (`status`),
+  KEY `idx_composite_status_expiry` (`status`,`expiry_date`)
+) ENGINE=InnoDB AUTO_INCREMENT=41 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `drug_batches`
+-- Dumping data for table `drug_batches`
 --
 
-INSERT INTO `drug_batches` (`id`, `batch_id`, `batch_number`, `block_number`, `created_at`, `current_owner`, `drug_name`, `expiry_date`, `is_synced`, `manufacture_timestamp`, `manufacturer`, `manufacturer_address`, `qr_code`, `quantity`, `status`, `storage_conditions`, `transaction_hash`, `updated_at`, `items_merkle_root`) VALUES
-(96, 17721137980446163, 'BT202602262049', 7, '2026-02-26 20:49:58.000000', '0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65', 'Azithromycin 500mg', '2028-02-26 23:59:59.000000', b'1', '2026-02-26 20:49:58.000000', 'Dược Hậu Giang', '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', 'NCKH-PHARMA-3EF547F65715D3-BT202602262049', 0, 'DELIVERED', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', '0x90b92a774d4708b355abece126d2efc7740ea72030fd118953d22d1f2428e6a0', '2026-02-26 21:29:03.000000', '0xccf3a6e1d907991ba8e7c5a850d36a2d236c35f17103912ff20250b541320590'),
-(97, 17730177372305144, 'BT202603090755', 1, '2026-03-09 07:55:37.000000', '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', 'Augmentin 1g', '2028-03-09 23:59:59.000000', b'1', '2026-03-09 07:55:37.000000', 'Dược Hậu Giang', '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', 'NCKH-PHARMA-3EFD809C14B6F8-BT202603090755', 5, 'IN_TRANSIT', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', '0x019b0a0d063e8528fd7895449a3502b795152907fe5b64ed05c5f8e4955d58fb', '2026-03-09 07:55:49.000000', '0x9691cc0249f0151a64e1e664156e84a73bead64680d15e9200160571ae58bbcd'),
-(98, 17730335414636476, 'BT202603091219', 3, '2026-03-09 12:19:01.000000', '0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65', 'Klamentin 1g', '2028-03-09 23:59:59.000000', b'1', '2026-03-09 12:19:01.000000', 'Dược Hậu Giang', '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', 'NCKH-PHARMA-3EFDA568234FBC-BT202603091219', 0, 'DELIVERED', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', '0x7118b536bc89a29fdeb40f6548fd9fdb90120cbc4348ac91fc9e8a7a87749d2f', '2026-03-25 15:04:33.000000', '0xd0a2b12a3259777ffb2b519f00f92e3be16e57e09fdce30ff4b0df9e1f4b0c7b'),
-(99, 17744248278126801, 'BT202603251447', 1, '2026-03-25 14:47:07.000000', '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', 'Augmentin 1g', '2028-03-31 23:59:59.000000', b'1', '2026-03-25 14:47:07.000000', 'Dược Hậu Giang', '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', 'NCKH-PHARMA-3F0A4CBF6C90D1-BT202603251447', 1, 'MANUFACTURED', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', '0x2c7b4ea024aea85978db5c3f4de83b53319caed672c62e975db150827bba5941', '2026-03-25 14:47:08.000000', '0x4fba614783c5b81c23f75fab564fb1ad5cc59c8e7ef1135767f0c79096fb85ee'),
-(100, 17744256371854763, 'BT202603251500', 2, '2026-03-25 15:00:37.000000', '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', 'Klamentin 625', '2028-03-25 23:59:59.000000', b'1', '2026-03-25 15:00:37.000000', 'Dược Hậu Giang', '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', 'NCKH-PHARMA-3F0A4EA1D90DAB-BT202603251500', 5, 'MANUFACTURED', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', '0xb42abf0586a4f518a733dd89a58750e4c040aec4892eea5b6be70ea83d9e7ddf', '2026-03-25 15:00:37.000000', '0xad056a280d29104668aa9ca53bc8587cf00ac3fa3904038834712ec821f0fa5b');
-
--- --------------------------------------------------------
+LOCK TABLES `drug_batches` WRITE;
+/*!40000 ALTER TABLE `drug_batches` DISABLE KEYS */;
+INSERT INTO `drug_batches` VALUES (1,6,'BT202604291059',10753337,'2026-04-29 10:59:34.093286','0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC','Zinnat 500mg','2029-09-25 23:59:59.000000',_binary '','2026-04-29 10:59:34.075779','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F25ADC19ED095-BT202604291059',0,'DELIVERED','Nơi khô, dưới 30 độ C, tránh ánh sáng.','0xcb583bae641287b8262eb4e1937f152c28e712eee9e57efea86bd0811e7f1fb3','2026-04-30 23:26:49.471029','0x35162a23fb3feb5099f84cdc5ac6209395d3ced70c1b52113604ce1190b68df7',NULL,NULL),(2,7,'BT202604302225',10762961,'2026-04-30 22:25:48.931059','0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC','Cefixim 200mg','2029-03-20 23:59:59.000000',_binary '','2026-04-30 22:25:48.896834','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F26D6CA238F0E-BT202604302225',20,'DELIVERED','Nơi khô, dưới 30 độ C, tránh ánh sáng.','0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5','2026-05-02 00:12:15.710367','0xe6072e558aa85505a8ad94b9977200769b13f0b145b4f4d9ff770c78be8b2f75',NULL,NULL),(3,8,'BT202605012325',10769732,'2026-05-01 23:25:56.060418','0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC','Cefixim 200mg','2028-03-20 23:59:59.000000',_binary '','2026-05-01 23:25:56.053899','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F27A85A95EE14-BT202605012325',2,'DELIVERED','Nơi khô, dưới 30 độ C, tránh ánh sáng.','0x3d13e52005d568fc35da708e22e9a94333591da551dd228fac8d4a2e4dd2fe92','2026-05-01 23:28:07.560720','0x851a54b072d94fac51644b47c01034e14c3ab23a30126e95394bada2c93b8eaf',NULL,NULL),(4,9,'BT202605012341',10769802,'2026-05-01 23:41:10.136639','0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC','Medoclav 1g','2028-04-23 23:59:59.000000',_binary '','2026-05-01 23:41:10.132871','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F27AA7B6B4913-BT202605012341',23,'DELIVERED','Nơi khô, dưới 30 độ C, tránh ánh sáng.','0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94','2026-05-01 23:41:52.562543','0x001b695c5c649987e439064a89d910e521d232ecdabcb0cd401c8c68d799e655',NULL,NULL),(5,10,'BT202605020004',10769908,'2026-05-02 00:04:30.248246','0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC','Cefixim 200mg','2029-05-25 23:59:59.000000',_binary '','2026-05-02 00:04:30.245264','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F27ADBDF3735A-BT202605020004',25,'DELIVERED','Nơi khô, dưới 30 độ C, tránh ánh sáng.','0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9','2026-05-02 00:05:44.820253','0x12931d7a7d15b6f0f3dfbb9145da1934751d9fd2612cb562985bf8a7a0bae2ce',NULL,NULL),(6,11,'BT202605020008',10769927,'2026-05-02 00:08:15.341727','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','Zinnat 500mg','2029-04-10 23:59:59.000000',_binary '','2026-05-02 00:08:15.341014','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F27AE441E5C04-BT202605020008',10,'MANUFACTURED','Nơi khô, dưới 30 độ C, tránh ánh sáng.','0xcf28c7f6d25b233fe7c205e044a66d63fdf5102ea47d514116be8ff4519907b8','2026-05-02 00:08:25.505795','0x79cb2052ca931158e2e98ee5f7d799f004a521bcdea12d15c0efa96c51589255',NULL,NULL),(7,12,'BT202605022211',10775952,'2026-05-02 22:11:59.834674','0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC','Klamentin 625','2028-05-14 23:59:59.000000',_binary '','2026-05-02 22:11:59.830416','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F286730CDC269-BT202605022211',14,'DELIVERED','Nơi khô, dưới 30 độ C, tránh ánh sáng.','0xb700d81a2dae2b48ae7c4bb1489a0ebcaf1d494706cdb01176b976b58d54b993','2026-05-02 22:15:15.351720','0xbc03c3b197e295c0b2ee583d7d9368391c194ed4dcce11fb0cee74659502c7f1',NULL,NULL),(8,13,'BT202605022222',10775999,'2026-05-02 22:22:22.407788','0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC','Azithromycin 500mg','2028-03-12 23:59:59.000000',_binary '','2026-05-02 22:22:22.398387','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F2868A3E1F617-BT202605022222',23,'DELIVERED','Nơi khô, dưới 30 độ C, tránh ánh sáng.','0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e','2026-05-02 22:24:48.671113','0x8b78487ac7c31b8cef6c16f4d5e8411ff4d35f5f061d05ed7cba88ff5930e257',NULL,NULL),(29,14,'BATCH-1777736202-1',10776066,'2026-05-02 22:36:42.878031','0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC','Azithromycin 500mg','2027-05-02 23:59:59.000000',_binary '','2026-05-02 22:36:42.876672','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F286AA4C498B9-BATCH-1777736202-1',5,'DELIVERED','Nơi khô ráo, thoáng mát','0xb6e4837e3d053aafe10a9778cdc1695221cb3302a2e26bf2ae5a68274d0ee1e8','2026-05-02 22:37:50.552595','0xc141a12cc5c2944c1ab3ecf08c28554b10c819839cd14f3789e007eb4f1a212f',NULL,NULL),(30,15,'BATCH-1777736223-2',10776068,'2026-05-02 22:37:03.127154','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','Azithromycin 500mg','2027-05-02 23:59:59.000000',_binary '','2026-05-02 22:37:03.126826','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F286AB0D691FD-BATCH-1777736223-2',5,'IN_TRANSIT','Nơi khô ráo, thoáng mát','0xb4086de847760b9d3af7192ead9ce718c4b585873c9b6ff4a8764d40e0b76ef5','2026-05-02 22:37:37.837361','0x5fd5f9df1d4aebde1c5bf9896c29e5fa2edf5c2c3da286600fe58f88cf344a07',NULL,NULL),(31,16,'BATCH-1777736259-3',10776070,'2026-05-02 22:37:39.905688','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','Azithromycin 500mg','2027-05-02 23:59:59.000000',_binary '','2026-05-02 22:37:39.905130','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F286AC6C24213-BATCH-1777736259-3',5,'IN_TRANSIT','Nơi khô ráo, thoáng mát','0x653a1b0d1007b9930fbab471f6ea1b9d22045a0cdba2447245cb643047d0b2fe','2026-05-02 22:38:14.507840','0xea8b96cea886395a23925ba8e928c7f1c0bdd49f81daa40301924a6cae5950b0',NULL,NULL),(32,17,'BATCH-1777736296-4',10776072,'2026-05-02 22:38:16.559785','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','Azithromycin 500mg','2027-05-02 23:59:59.000000',_binary '','2026-05-02 22:38:16.558918','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F286ADC9B56E2-BATCH-1777736296-4',5,'IN_TRANSIT','Nơi khô ráo, thoáng mát','0xe6e55f752f87c196b247fa351f5006d2b2deb9803e68903ffbe8aa4c91d68f1d','2026-05-02 22:38:37.186768','0x6bf7f1d97ba25a4a2f6ab8ede655e778148f1386bf27c532314504efa0611908',NULL,NULL),(33,18,'BATCH-1777736319-5',10776074,'2026-05-02 22:38:39.237048','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','Azithromycin 500mg','2027-05-02 23:59:59.000000',_binary '','2026-05-02 22:38:39.236416','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F286AEA1FC637-BATCH-1777736319-5',5,'IN_TRANSIT','Nơi khô ráo, thoáng mát','0x03c0ab11fc25208ab8608d72dade8fac2a183f89d0f844f42e6c1c0c8f3367ab','2026-05-02 22:39:13.537925','0xa17ca5b08484dc670caa80d00abc1e0b16f260a0d067b4ee2b643c1d8d1fdd79',NULL,NULL),(34,19,'BATCH-1777736355-6',10776076,'2026-05-02 22:39:15.611216','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','Azithromycin 500mg','2027-05-02 23:59:59.000000',_binary '','2026-05-02 22:39:15.610764','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F286AFFCDEB77-BATCH-1777736355-6',5,'IN_TRANSIT','Nơi khô ráo, thoáng mát','0x4c3e4ab9513089993a3f9025dc8aa1ae3f2dc22ad224145251c085ed4d4787b4','2026-05-02 22:39:37.360421','0xcf1b018025ff06b340f844155da20cf5669750defcdd400a26aae9196b49d809',NULL,NULL),(35,20,'BATCH-1777736379-7',10776078,'2026-05-02 22:39:39.423395','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','Azithromycin 500mg','2027-05-02 23:59:59.000000',_binary '','2026-05-02 22:39:39.422536','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F286B0DFF7A57-BATCH-1777736379-7',5,'IN_TRANSIT','Nơi khô ráo, thoáng mát','0xc97bef8eeb7cce39858d706d53f529a1ba14739f70f076b5109f5453fcf86b69','2026-05-02 22:40:01.364477','0x86690beff9434b3f99fc9b1e91909951a494fc39e51eb380b8063cb536e097df',NULL,NULL),(36,21,'BATCH-1777736403-8',10776080,'2026-05-02 22:40:03.410765','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','Azithromycin 500mg','2027-05-02 23:59:59.000000',_binary '','2026-05-02 22:40:03.410397','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F286B1C4BAA76-BATCH-1777736403-8',5,'IN_TRANSIT','Nơi khô ráo, thoáng mát','0x08501b58be8bd5012b245a98c29bc6f60c1cce023339675cff766622b4a0c664','2026-05-02 22:40:25.397088','0xc739ce24e56f6ec595e1913d7e35e8b1dd6cc55062f46fb0b35a804d5e6a580d',NULL,NULL),(37,22,'BATCH-1777736427-9',10776082,'2026-05-02 22:40:27.442892','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','Azithromycin 500mg','2027-05-02 23:59:59.000000',_binary '','2026-05-02 22:40:27.442210','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F286B2A9E7ADE-BATCH-1777736427-9',5,'IN_TRANSIT','Nơi khô ráo, thoáng mát','0x9bc369963920a1edfd92591e077e0424da7c08b1172e64b587045e54ea374b3f','2026-05-02 22:40:50.386178','0x9163e39bd5741a6e567692e0bddaf77de8f5bec3835bf3d519b32c67113bee3e',NULL,NULL),(38,23,'BATCH-1777736452-10',10776084,'2026-05-02 22:40:52.421038','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','Azithromycin 500mg','2027-05-02 23:59:59.000000',_binary '','2026-05-02 22:40:52.420769','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F286B398210A4-BATCH-1777736452-10',5,'IN_TRANSIT','Nơi khô ráo, thoáng mát','0x14839f2c1434329918fe11f3be2654e0dfde0d17eb56a81403b44d65d942ce15','2026-05-02 22:41:02.741989','0x759ce24ecb39f9217502b2a3939a1d40fa543f52692c3811fd082436795a288f',NULL,NULL),(39,17777366014746596,'BT202605022243',0,'2026-05-02 22:43:21.482282','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','Cefixim 200mg','2029-05-26 23:59:59.000000',_binary '\0','2026-05-02 22:43:21.475473','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F286B9259DFE4-BT202605022243',26,'MANUFACTURED','Nơi khô, dưới 30 độ C, tránh ánh sáng.','PENDING_1777736601475','2026-05-02 22:43:21.482282',NULL,NULL,NULL),(40,24,'BT202605231424',10903206,'2026-05-23 14:24:11.177190','0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc','Biosubtyl-II','2027-02-20 23:59:59.000000',_binary '','2026-05-23 14:24:11.172560','Dược Hậu Giang','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NCKH-PHARMA-3F38A65140F79C-BT202605231424',0,'DELIVERED','Nơi khô, dưới 30 độ C.','0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b','2026-05-23 14:37:20.841912','0xca302869332b3e419707d0a56efa736d514687896eea280c7f7e5cd9b836206f',NULL,NULL);
+/*!40000 ALTER TABLE `drug_batches` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc bảng cho bảng `drug_products`
+-- Table structure for table `drug_products`
 --
 
+DROP TABLE IF EXISTS `drug_products`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `drug_products` (
-  `id` bigint(20) NOT NULL,
-  `name` varchar(255) NOT NULL,
-  `active_ingredient` varchar(255) DEFAULT NULL,
-  `dosage` varchar(100) DEFAULT NULL,
-  `dosage_form` enum('tablet','capsule','syrup','injection','cream','drops','other') DEFAULT NULL,
-  `category` varchar(100) DEFAULT NULL,
-  `image_url` varchar(500) DEFAULT NULL,
-  `manufacturer_id` bigint(20) NOT NULL,
-  `description` text DEFAULT NULL,
-  `storage_conditions` varchar(500) DEFAULT NULL,
-  `shelf_life_months` int(11) DEFAULT NULL,
-  `registration_number` varchar(100) DEFAULT NULL,
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `name` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `active_ingredient` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `dosage` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `dosage_form` enum('tablet','capsule','syrup','injection','cream','drops','other') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `category` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `image_url` varchar(500) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `manufacturer_id` bigint NOT NULL,
+  `description` text COLLATE utf8mb4_general_ci,
+  `storage_conditions` varchar(500) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `shelf_life_months` int DEFAULT NULL,
+  `registration_number` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
   `approval_date` date DEFAULT NULL,
-  `is_active` tinyint(1) DEFAULT 1,
-  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
-  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
-  `shelf_life` varchar(100) DEFAULT NULL,
-  `status` varchar(50) DEFAULT NULL,
-  `unit` varchar(50) DEFAULT NULL,
-  `contraindications` text DEFAULT NULL,
-  `drug_interactions` text DEFAULT NULL,
-  `indications` text DEFAULT NULL,
-  `precautions` text DEFAULT NULL,
-  `side_effects` text DEFAULT NULL,
-  `usage_instructions` text DEFAULT NULL,
-  `article_url` varchar(500) DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+  `is_active` tinyint(1) DEFAULT '1',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `shelf_life` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `status` varchar(50) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `unit` varchar(50) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `contraindications` text COLLATE utf8mb4_general_ci,
+  `drug_interactions` text COLLATE utf8mb4_general_ci,
+  `indications` text COLLATE utf8mb4_general_ci,
+  `precautions` text COLLATE utf8mb4_general_ci,
+  `side_effects` text COLLATE utf8mb4_general_ci,
+  `usage_instructions` text COLLATE utf8mb4_general_ci,
+  `article_url` varchar(500) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_drug_products_manufacturer` (`manufacturer_id`),
+  KEY `idx_drug_products_name` (`name`),
+  KEY `idx_drug_products_category` (`category`),
+  KEY `idx_drug_products_active` (`is_active`),
+  KEY `idx_drug_products_manufacturer_id` (`manufacturer_id`),
+  KEY `idx_manufacturer_id` (`manufacturer_id`),
+  KEY `idx_registration_number` (`registration_number`),
+  FULLTEXT KEY `name` (`name`,`active_ingredient`,`description`),
+  FULLTEXT KEY `name_2` (`name`,`active_ingredient`,`description`),
+  CONSTRAINT `drug_products_ibfk_1` FOREIGN KEY (`manufacturer_id`) REFERENCES `pharma_companies` (`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=65 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `drug_products`
+-- Dumping data for table `drug_products`
 --
 
-INSERT INTO `drug_products` (`id`, `name`, `active_ingredient`, `dosage`, `dosage_form`, `category`, `image_url`, `manufacturer_id`, `description`, `storage_conditions`, `shelf_life_months`, `registration_number`, `approval_date`, `is_active`, `created_at`, `updated_at`, `shelf_life`, `status`, `unit`, `contraindications`, `drug_interactions`, `indications`, `precautions`, `side_effects`, `usage_instructions`, `article_url`) VALUES
-(19, 'Augmentin 1g', 'Amoxicillin + Acid Clavulanic', '875mg/125mg', NULL, 'Kháng sinh – thuốc kê đơn', 'http://localhost:8080/uploads/7d85649e-22ae-4997-87bf-39f7e2efe8f6.jpeg', 1, 'Kháng sinh phổ rộng điều trị nhiễm khuẩn đường hô hấp, tiết niệu, da và mô mềm.', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '24 tháng', 'active', 'Viên', 'Dị ứng với amoxicillin, acid clavulanic hoặc kháng sinh beta-lactam; tiền sử vàng da/viêm gan do thuốc.', 'Probenecid làm tăng nồng độ amoxicillin; giảm hiệu quả thuốc tránh thai đường uống; tương tác với allopurinol có thể tăng nguy cơ phát ban.', 'Điều trị các nhiễm khuẩn do vi khuẩn nhạy cảm như: viêm amidan, viêm xoang, viêm tai giữa, viêm phế quản và viêm phổi; nhiễm khuẩn tiết niệu và nhiễm khuẩn da và mô mềm.', 'Theo dõi chức năng gan, thận khi dùng kéo dài; thận trọng ở bệnh nhân dị ứng penicillin trước đó.', 'Tiêu chảy, buồn nôn, đau bụng, phát ban; hiếm gặp: phản vệ, viêm đại tràng giả mạc.', 'Uống trong bữa ăn để giảm kích ứng dạ dày; dùng đủ liệu trình theo chỉ định bác sĩ.', 'https://medlatec.vn/tin-tuc/augmentin-1g-tac-dung-lieu-dung-va-nhung-luu-y-khi-su-dung-s195-n18198'),
-(20, 'Klamentin 625', 'Amoxicillin + Acid Clavulanic', '500mg/125mg', NULL, 'Kháng sinh – thuốc kê đơn', 'https://cms-prod.s3-sgn09.fptcloud.com/dsc_0528_403c4f796d.jpg', 1, 'Kháng sinh phối hợp điều trị nhiễm khuẩn nhạy cảm với Amoxicillin.', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '24 tháng', 'active', 'Viên', 'Quá mẫn với penicillin, cephalosporin hoặc thành phần thuốc.', 'Giống Augmentin; probenecid làm tăng nồng độ thuốc.', 'Điều trị nhiễm khuẩn hô hấp trên, viêm tai giữa, nhiễm khuẩn tiết niệu và da.', 'Thận trọng khi suy gan, suy thận; theo dõi men gan.', 'Buồn nôn, tiêu chảy, phát ban da.', 'Uống đầu bữa ăn, theo lịch triều bác sĩ.', 'https://www.vinmec.com/vie/bai-viet/cong-dung-cua-thuoc-klamentin-625-mg-vi'),
-(21, 'Klamentin 1g', 'Amoxicillin + Acid Clavulanic', '875mg/125mg', NULL, 'Kháng sinh – thuốc kê đơn', 'https://cms-prod.s3-sgn09.fptcloud.com/00018596_klamentin_1g_duoc_hau_giang_2x7_5475_6207_1637731778.jpg', 1, 'Kháng sinh hàm lượng cao cho các nhiễm khuẩn nặng đường hô hấp, tiết niệu.', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '24 tháng', 'active', 'Viên', 'Quá mẫn với amoxicillin/clavulanate; rối loạn chức năng gan nghiêm trọng.', 'Tương tự Augmentin.', 'Điều trị nhiễm khuẩn nặng đường hô hấp, mô mềm và viêm phổi.', 'Điều chỉnh liều ở người suy thận; theo dõi chức năng gan.', 'Đau bụng, tiêu chảy, phát ban.', 'Uống theo liều bác sĩ khuyến cáo.', 'https://www.vinmec.com/vie/bai-viet/klamentin-1g-la-thuoc-gi-vi'),
-(22, 'Zinnat 500mg', 'Cefuroxim axetil', '500mg', NULL, 'Kháng sinh – thuốc kê đơn', 'https://cms-prod.s3-sgn09.fptcloud.com/00003460_zinnat_500mg_hang_nhap_khau_1v_6380_6339_1633512301.jpg', 1, 'Kháng sinh nhóm Cephalosporin thế hệ 2 điều trị nhiễm khuẩn hiệu quả.', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '36 tháng', 'active', 'Viên', 'Dị ứng cephalosporin; tiền sử phản ứng nặng với penicillin.', 'Probenecid làm tăng nồng độ thuốc.', 'Điều trị nhiễm khuẩn hô hấp, nhiễm khuẩn da và đường tiết niệu nhạy cảm với cefuroxim.', 'Thận trọng ở bệnh nhân dị ứng beta-lactam.', 'Tiêu chảy, buồn nôn, đau bụng.', 'Uống sau ăn để cải thiện hấp thu.', 'http://vinmec.com/vie/bai-viet/zinnat-cap-nhat-thong-tin-su-dung-vi'),
-(23, 'Medoclav 1g', 'Amoxicillin + Acid Clavulanic', '875mg/125mg', NULL, 'Kháng sinh – thuốc kê đơn', 'https://cms-prod.s3-sgn09.fptcloud.com/00000002_medoclav_1g_medochemie_2x7_5568_6142_1634629452.jpg', 1, 'Kháng sinh phối hợp giúp chống lại vi khuẩn kháng thuốc.', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '24 tháng', 'active', 'Viên', 'Quá mẫn với penicillin hoặc beta-lactam.', 'Tương tác probenecid.', 'Điều trị nhiễm khuẩn do vi khuẩn nhạy cảm như viêm tai giữa, viêm xoang, nhiễm khuẩn da và mô mềm.', 'Theo dõi chức năng gan; thận trọng ở người có tiền sử dị ứng penicillin.', 'Buồn nôn, tiêu chảy, đau đầu.', 'Uống theo hướng dẫn, không bỏ liều giữa chừng.', 'https://www.vinmec.com/vie/bai-viet/cong-dung-thuoc-medoclav-vi'),
-(24, 'Cefixim 200mg', 'Cefixim', '200mg', NULL, 'Kháng sinh – thuốc kê đơn', 'https://cms-prod.s3-sgn09.fptcloud.com/00001037_cefixim_200mg_3x10_cuu_long_5177_6118_1633514757.jpg', 1, 'Kháng sinh Cephalosporin thế hệ 3, dùng cho nhiễm khuẩn hô hấp và tiết niệu.', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '36 tháng', 'active', 'Viên', 'Dị ứng cephalosporin.', 'Probenecid làm tăng nồng độ thuốc.', 'Điều trị nhiễm khuẩn như viêm phổi, viêm họng, nhiễm khuẩn tiết niệu.', 'Theo dõi chức năng thận ở bệnh nhân suy thận.', 'Tiêu chảy, đau bụng.', 'Uống 1–2 lần/ngày theo chỉ định.', 'https://medlatec.vn/tin-tuc/cefixime-thuoc-khang-sinh-dieu-tri-nhiem-trung-nhung-can-can-trong-khi-dung'),
-(25, 'Cefuroxim 500mg', 'Cefuroxim', '500mg', NULL, 'Kháng sinh – thuốc kê đơn', 'https://cms-prod.s3-sgn09.fptcloud.com/00000300_cefuroxim_500mg_vidipha_2x5_5548_6097_1634542284.jpg', 1, 'Điều trị các nhiễm khuẩn do vi khuẩn nhạy cảm gây ra.', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '36 tháng', 'active', 'Viên', 'Quá mẫn cephalosporin.', 'Probenecid làm tăng thuốc trong máu.', 'Điều trị viêm xoang, viêm phổi, nhiễm khuẩn tiết niệu.', 'Theo dõi chức năng thận.', 'Buồn nôn, tiêu chảy.', 'Uống sau bữa ăn.', 'https://www.vinmec.com/vie/bai-viet/thuoc-cefuroxim-500mg-tri-benh-gi-vi'),
-(26, 'Levofloxacin 500mg', 'Levofloxacin', '500mg', NULL, 'Kháng sinh – thuốc kê đơn', 'https://cms-prod.s3-sgn09.fptcloud.com/00007887_levofloxacin_500mg_pymepharco_2x10_8147_6151_1637731777.jpg', 1, 'Kháng sinh nhóm Fluoroquinolone cho nhiễm khuẩn nặng hô hấp và da.', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '36 tháng', 'active', 'Viên', 'Dị ứng quinolone; trẻ em và người mang thai trừ chỉ định đặc biệt.', 'Thuốc kháng acid làm giảm hấp thu.', 'Điều trị nhiễm khuẩn phổi, tiết niệu và da do vi khuẩn nhạy cảm.', 'Nguy cơ viêm gân ở người già; thận trọng suy thận.', 'Chóng mặt, buồn nôn, đau đầu.', 'Uống nhiều nước, tránh dùng cùng các chất chứa kim loại.', 'https://www.vinmec.com/vie/bai-viet/cong-dung-thuoc-levofloxacin-stada-500-mg-vi'),
-(27, 'Moxifloxacin 400mg', 'Moxifloxacin', '400mg', NULL, 'Kháng sinh – thuốc kê đơn', 'https://cms-prod.s3-sgn09.fptcloud.com/00007843_moxifloxacin_400mg_pymepharco_1x10_3735_6169_1637731779.jpg', 1, 'Kháng sinh phổ rộng điều trị viêm phổi và các nhiễm khuẩn phức tạp.', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '36 tháng', 'active', 'Viên', 'Dị ứng quinolone; tiền sử rối loạn nhịp.', 'Thuốc kháng acid làm giảm hấp thu.', 'Điều trị viêm phổi cộng đồng và các nhiễm khuẩn phức tạp.', 'Thận trọng ở bệnh nhân bệnh tim và nhịp QT kéo dài.', 'Buồn nôn, đau đầu, tiêu chảy.', 'Uống theo chỉ định, tránh dùng cùng sữa.', 'https://nhathuoclongchau.com.vn/thanh-phan/moxifloxacin'),
-(28, 'Azithromycin 500mg', 'Azithromycin', '500mg', NULL, 'Kháng sinh – thuốc kê đơn', 'http://localhost:8080/uploads/a64de0be-0d46-4dea-bfb9-ae7ec4ce0d6f.webp', 1, 'Kháng sinh nhóm Macrolide điều trị nhiễm khuẩn hô hấp, liều ngắn ngày.', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '24 tháng', 'active', 'Viên', 'Dị ứng azithromycin hoặc macrolid.', 'Tương tác với thuốc chống đông.', 'Điều trị nhiễm khuẩn đường hô hấp, viêm họng và nhiễm khuẩn da.', 'Thận trọng ở bệnh nhân bệnh gan nặng.', 'Tiêu chảy, buồn nôn, đau bụng.', 'Uống 1 lần/ngày theo liệu trình.', 'https://www.vinmec.com/vie/bai-viet/thuoc-azithromycin-cong-dung-chi-dinh-va-luu-y-khi-dung-vi'),
-(29, 'Nexium 40mg', 'Esomeprazol', '40mg', NULL, 'Thuốc dạ dày – tiêu hóa', 'https://cms-prod.s3-sgn09.fptcloud.com/00000052_nexium_40mg_astrazeneca_2x7_5365.jpg', 1, 'Thuốc ức chế bơm proton điều trị trào ngược dạ dày (GERD) và viêm loét.', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '36 tháng', 'active', 'Viên', 'Quá mẫn với esomeprazole hoặc PPI.', 'Giảm hấp thu ketoconazole và thuốc HIV; tương tác với clopidogrel.', 'Điều trị trào ngược dạ dày thực quản (GERD) và loét dạ dày tá tràng.', 'Dùng lâu có thể giảm hấp thu vitamin B12.', 'Đau đầu, buồn nôn, tiêu chảy.', 'Uống trước bữa ăn 30–60 phút.', 'https://medlatec.vn/tin-tuc/thuoc-da-day-nexium-40mg-va-6-thong-tin-can-biet-truoc-khi-su-dung'),
-(30, 'Esomeprazol STADA 40mg', 'Esomeprazol', '40mg', NULL, 'Thuốc dạ dày – tiêu hóa', 'https://cms-prod.s3-sgn09.fptcloud.com/00021615_esomeprazol_stada_40mg_stada_4x7_5474_6010_1633513303.jpg', 1, 'Giảm tiết acid dạ dày, hỗ trợ điều trị viêm loét và HP.', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '24 tháng', 'active', 'Viên', 'Dị ứng PPI.', 'Tương tác thuốc hấp thu acid dạ dày.', 'Điều trị GERD, loét dạ dày tá tràng và hội chứng tăng acid.', 'Theo dõi khi dùng dài ngày.', 'Đau đầu, tiêu chảy.', 'Uống trước ăn để hiệu quả tối ưu.', 'https://nhathuoclongchau.com.vn/thuoc/esomeprazole-stada-40mg-2x10-33212.html'),
-(31, 'Pantoprazol 40mg', 'Pantoprazol', '40mg', NULL, 'Thuốc dạ dày – tiêu hóa', 'https://cms-prod.s3-sgn09.fptcloud.com/00009653_pantoprazol_stada_40mg_stada_4x7_8984_6168.jpg', 1, 'Thuốc ức chế bơm proton thế hệ mới, điều trị loét dạ dày tá tràng.', 'Nơi khô, dưới 30 độ C, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '36 tháng', 'active', 'Viên', 'Quá mẫn với pantoprazole hoặc thuốc ức chế bơm proton.', 'Giảm hấp thu thuốc phụ thuộc pH dạ dày như ketoconazole.', 'Điều trị trào ngược dạ dày thực quản (GERD), viêm thực quản do acid, loét dạ dày tá tràng.', 'Dùng dài ngày có thể giảm hấp thu vitamin B12 và magnesi.', 'Đau đầu, tiêu chảy, đau bụng, buồn nôn.', 'Uống trước bữa ăn khoảng 30 phút.', 'https://www.vinmec.com/vie/bai-viet/cong-dung-thuoc-pantoprazol-40mg-vi'),
-(32, 'Gaviscon hộp', 'Natri alginate, Natri bicarbonat, Calci carbonat', 'Hỗn dịch', NULL, 'Thuốc dạ dày – tiêu hóa', 'https://cms-prod.s3-sgn09.fptcloud.com/00010903_gaviscon_dual_action_r_10ml_24v_7366.jpg', 1, 'Tạo lớp màng bảo vệ ngăn chặn trào ngược acid dạ dày, giảm ợ nóng.', 'Nơi khô, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '24 tháng', 'active', 'Hộp', 'Quá mẫn với alginate hoặc bicarbonate.', 'Có thể ảnh hưởng hấp thu thuốc khác nếu dùng cùng lúc.', 'Điều trị trào ngược dạ dày, ợ nóng và khó tiêu do acid.', 'Thận trọng ở bệnh nhân suy thận hoặc hạn chế natri.', 'Táo bón nhẹ, đầy hơi.', 'Uống sau bữa ăn và trước khi ngủ.', 'https://www.vinmec.com/vie/bai-viet/thuoc-gaviscon-tac-dung-lieu-dung-va-luu-y-su-dung-vi'),
-(33, 'Enterogermina', 'Bacillus clausii', '2 tỷ bào tử', NULL, 'Thuốc dạ dày – tiêu hóa', 'https://cms-prod.s3-sgn09.fptcloud.com/00004944_enterogermina_2ty_5ml_20_ong_8223.jpg', 1, 'Men vi sinh bổ sung lợi khuẩn, phòng và điều trị rối loạn tiêu hóa.', 'Nơi khô, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '24 tháng', 'active', 'Ống', 'Quá mẫn với Bacillus clausii.', 'Kháng sinh có thể làm giảm hiệu quả.', 'Phòng và điều trị rối loạn hệ vi sinh đường ruột, tiêu chảy do kháng sinh.', 'Không pha với nước nóng.', 'Ít gặp: đầy hơi, khó chịu nhẹ.', 'Uống trực tiếp hoặc pha với nước.', 'https://nhathuoclongchau.com.vn/thuoc/enterogemina-5ml-sanofi-20-ong-17315.html'),
-(34, 'BioGaia Probiotic', 'Lactobacillus reuteri Protectis', '5ml', NULL, 'Thuốc dạ dày – tiêu hóa', 'https://cms-prod.s3-sgn09.fptcloud.com/00501192_biogaia_protectis_baby_drops_5ml_1863.jpg', 1, 'Men vi sinh từ Thụy Điển giúp cải thiện hệ tiêu hóa cho trẻ em.', 'Bảo quản dưới 25 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '24 tháng', 'active', 'Chai', 'Dị ứng với Lactobacillus reuteri.', 'Không đáng kể.', 'Bổ sung lợi khuẩn giúp cải thiện tiêu hóa ở trẻ.', 'Bảo quản đúng nhiệt độ.', 'Ít gặp: đầy hơi.', 'Nhỏ trực tiếp vào miệng hoặc pha với sữa.', 'https://medlatec.vn/tin-tuc/tim-hieu-men-tieu-hoa-biogaia-va-cach-su-dung-an-toan-hieu-qua'),
-(35, 'Smecta hộp', 'Diosmectite', '3g', NULL, 'Thuốc dạ dày – tiêu hóa', 'https://cms-prod.s3-sgn09.fptcloud.com/00014059_smecta_v_cam_chanh_30g_7718.jpg', 1, 'Thuốc hấp phụ bảo vệ niêm mạc đường tiêu hóa, điều trị tiêu chảy.', 'Nơi khô, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '36 tháng', 'active', 'Hộp', 'Quá mẫn với diosmectite.', 'Có thể giảm hấp thu thuốc khác.', 'Điều trị tiêu chảy cấp và mạn, bảo vệ niêm mạc tiêu hóa.', 'Thận trọng khi dùng cho trẻ nhỏ.', 'Táo bón nhẹ.', 'Pha gói thuốc với nước trước khi uống.', 'https://www.vinmec.com/vie/bai-viet/thuoc-smecta-chu-y-lieu-dung-va-huong-dan-su-dung-dung-cach-vi'),
-(36, 'Biosubtyl-II', 'Bacillus subtilis', '1 tỷ bào tử', NULL, 'Thuốc dạ dày – tiêu hóa', 'https://cms-prod.s3-sgn09.fptcloud.com/00000405_biosubtyl_ii_dalat_25_goi_x_1g_1411_6345.jpg', 1, 'Vi khuẩn sống có lợi cho đường ruột, hỗ trợ tiêu hóa.', 'Nơi khô, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '24 tháng', 'active', 'Gói', 'Dị ứng với Bacillus subtilis.', 'Kháng sinh có thể làm giảm hiệu quả.', 'Bổ sung vi khuẩn có lợi cho đường ruột.', 'Không dùng với nước nóng.', 'Đầy hơi nhẹ.', 'Uống sau ăn.', 'https://tpvnpharma.com/biosubtyl-ii'),
-(37, 'Prospan Siro', 'Cao khô lá thường xuân', '100ml', NULL, 'Thuốc ho – hô hấp – siro', 'https://cms-prod.s3-sgn09.fptcloud.com/00000941_siro_ho_prospan_100ml_3756.jpg', 1, 'Siro ho thảo dược giúp long đờm, giảm ho cho trẻ em và người lớn.', 'Nơi khô, dưới 25 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:03:34', '36 tháng', 'active', 'Chai', 'Dị ứng với cao lá thường xuân.', 'Không đáng kể.', 'Giảm ho, long đờm trong viêm phế quản.', 'Thận trọng ở trẻ dưới 2 tuổi.', 'Rối loạn tiêu hóa nhẹ.', 'Uống theo liều khuyến cáo.', 'https://www.vinmec.com/vie/bai-viet/huong-dan-su-dung-thuoc-ho-prospan-dang-siro-vien-ngam-cho-tre-vi'),
-(38, 'Muhi Siro trẻ em', 'Chiết xuất thảo dược', '120ml', NULL, 'Thuốc ho – hô hấp – siro', 'https://cms-prod.s3-sgn09.fptcloud.com/wellbaby_multi_vitamin_liquid_vitabiotics_ho_tro_suc_khoe_cho_be_150ml_7909_6372_1625907409.jpg', 1, 'Siro ho Nhật Bản với các hương vị dễ uống dành cho trẻ em.', 'Nơi khô, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:45', '24 tháng', 'active', 'Chai', 'Quá mẫn với thành phần.', 'Không đáng kể.', 'Giảm ho và long đờm cho trẻ em.', 'Thận trọng ở trẻ nhỏ.', 'Buồn ngủ nhẹ.', 'Dùng theo liều khuyến cáo.', 'https://www.vinmec.com/vie/bai-viet/tac-dung-phu-co-gap-khi-su-dung-khang-sinh-azithromycin-vi'),
-(39, 'Astex Siro', 'Húng chanh, Núc nác, Cineol', '90ml', NULL, 'Thuốc ho – hô hấp – siro', 'https://cms-prod.s3-sgn09.fptcloud.com/00000490_siro_ho_astex_90ml_4091_6339.jpg', 1, 'Siro ho thảo dược bệnh viện Nhi Đồng 1 sản xuất.', 'Nơi khô, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:45', '24 tháng', 'active', 'Chai', 'Quá mẫn với thành phần thảo dược.', 'Không đáng kể.', 'Điều trị ho do viêm họng hoặc cảm lạnh.', 'Thận trọng với trẻ nhỏ.', 'Rối loạn tiêu hóa nhẹ.', 'Uống sau ăn.', 'https://www.vinmec.com/vie/bai-viet/tac-dung-phu-co-gap-khi-su-dung-khang-sinh-azithromycin-vi'),
-(40, 'Bổ phế Nam Hà chai', 'Cát cánh, Tỳ bà diệp, Mơ muối...', '125ml', NULL, 'Thuốc ho – hô hấp – siro', 'https://cms-prod.s3-sgn09.fptcloud.com/00001099_thuoc_ho_bo_phe_nam_ha_chi_khai_lo_125ml_4366.jpg', 1, 'Thuốc ho đông dược truyền thống giúp bổ phế, chỉ khái.', 'Nơi khô, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '36 tháng', 'active', 'Chai', 'Dị ứng với thành phần đông dược.', 'Chưa ghi nhận.', 'Giảm ho, long đờm, hỗ trợ điều trị viêm phế quản.', 'Không dùng quá liều.', 'Ít gặp.', 'Uống theo liều hướng dẫn.', 'https://www.vinmec.com/vie/bai-viet/tac-dung-phu-co-gap-khi-su-dung-khang-sinh-azithromycin-vi'),
-(41, 'Eugica Siro', 'Eucalyptol, Gừng, Tần, Menthol', '100ml', NULL, 'Thuốc ho – hô hấp – siro', 'https://cms-prod.s3-sgn09.fptcloud.com/00000412_siro_ho_eugica_100ml_1752.jpg', 1, 'Siro ho thảo dược giúp sát trùng đường hô hấp, làm dịu cơn ho.', 'Nơi khô, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '24 tháng', 'active', 'Chai', 'Quá mẫn với tinh dầu.', 'Có thể tương tác thuốc an thần.', 'Giảm ho, sát trùng đường hô hấp.', 'Không dùng quá liều.', 'Buồn nôn nhẹ.', 'Uống sau ăn.', 'https://www.vinmec.com/vie/bai-viet/tac-dung-phu-co-gap-khi-su-dung-khang-sinh-azithromycin-vi'),
-(42, 'Toplexil Siro', 'Oxomemazine, Guaifenesin', '125ml', NULL, 'Thuốc ho – hô hấp – siro', 'https://cms-prod.s3-sgn09.fptcloud.com/00024479_siro_toplexil_sanofi_125ml_8700.jpg', 1, 'Thuốc trị ho có đờm và ho khan do kích ứng.', 'Nơi khô, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '36 tháng', 'active', 'Chai', 'Trẻ nhỏ dưới 2 tuổi.', 'Tăng tác dụng khi dùng cùng thuốc an thần.', 'Điều trị ho khan và ho có đờm.', 'Không lái xe khi dùng.', 'Buồn ngủ, chóng mặt.', 'Uống theo chỉ định bác sĩ.', 'https://www.vinmec.com/vie/bai-viet/tac-dung-phu-co-gap-khi-su-dung-khang-sinh-azithromycin-vi'),
-(43, 'Plavix 75mg', 'Clopidogrel', '75mg', NULL, 'Thuốc tim mạch – huyết áp – mỡ máu', 'https://cms-prod.s3-sgn09.fptcloud.com/00001859_plavix_75mg_28v_6221.jpg', 1, 'Thuốc chống kết tập tiểu cầu, phòng ngừa đột quỵ và nhồi máu cơ tim.', 'Nơi khô, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '36 tháng', 'active', 'Viên', 'Xuất huyết đang tiến triển.', 'Tương tác thuốc chống đông.', 'Phòng ngừa nhồi máu cơ tim và đột quỵ.', 'Thận trọng ở bệnh nhân nguy cơ chảy máu.', 'Chảy máu, bầm tím.', 'Uống mỗi ngày một lần.', 'https://www.vinmec.com/vie/bai-viet/thuoc-rosuvastatin-cong-dung-lieu-dung-va-luu-y-tac-dung-phu-vi'),
-(44, 'Crestor 10mg', 'Rosuvastatin', '10mg', NULL, 'Thuốc tim mạch – huyết áp – mỡ máu', 'https://cms-prod.s3-sgn09.fptcloud.com/00000055_crestor_10mg_astrazeneca_2x14_9495.jpg', 1, 'Thuốc hạ mỡ máu nhóm Statin hiệu quả cao.', 'Nơi khô, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '36 tháng', 'active', 'Viên', 'Bệnh gan hoạt động.', 'Antacid có thể giảm hấp thu.', 'Giảm cholesterol và phòng bệnh tim mạch.', 'Theo dõi chức năng gan.', 'Đau cơ, đau đầu.', 'Uống mỗi ngày một lần.', 'https://www.vinmec.com/vie/bai-viet/thuoc-crestor-cong-dung-chi-dinh-va-luu-y-khi-dung-vi'),
-(45, 'Crestor 20mg', 'Rosuvastatin', '20mg', NULL, 'Thuốc tim mạch – huyết áp – mỡ máu', 'https://cms-prod.s3-sgn09.fptcloud.com/00005597_crestor_20mg_astrazeneca_2x14_6380.jpg', 1, 'Mức liều 20mg cho bệnh nhân mỡ máu cao nặng.', 'Nơi khô, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '36 tháng', 'active', 'Viên', 'Bệnh gan nặng.', 'Tương tác antacid.', 'Điều trị tăng cholesterol máu nặng.', 'Theo dõi men gan.', 'Đau cơ, rối loạn tiêu hóa.', 'Uống 1 lần/ngày.', 'https://www.vinmec.com/vie/bai-viet/thuoc-crestor-cong-dung-chi-dinh-va-luu-y-khi-dung-vi'),
-(46, 'Coveram', 'Perindopril + Amlodipin', '5mg/5mg', NULL, 'Thuốc tim mạch – huyết áp – mỡ máu', 'https://cms-prod.s3-sgn09.fptcloud.com/00021319_coveram_5mg_5mg_servier_1x30_8932.jpg', 1, 'Thuốc phối hợp điều trị tăng huyết áp vô căn.', 'Nơi khô, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '24 tháng', 'active', 'Viên', 'Hạ huyết áp nặng.', 'Thuốc lợi tiểu tăng tác dụng hạ áp.', 'Điều trị tăng huyết áp.', 'Theo dõi huyết áp.', 'Chóng mặt, đau đầu.', 'Uống mỗi ngày một lần.', 'https://www.vinmec.com/vie/bai-viet/thuoc-dieu-tri-roi-loan-lipid-mau-vi'),
-(47, 'Concor 5mg', 'Bisoprolol fumarate', '5mg', NULL, 'Thuốc tim mạch – huyết áp – mỡ máu', 'https://cms-prod.s3-sgn09.fptcloud.com/00003023_concor_5mg_merck_3x10_8698.jpg', 1, 'Thuốc chẹn beta điều trị huyết áp và suy tim.', 'Nơi khô, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '36 tháng', 'active', 'Viên', 'Nhịp tim chậm.', 'Thuốc hạ áp khác tăng tác dụng.', 'Điều trị tăng huyết áp và suy tim.', 'Không ngừng thuốc đột ngột.', 'Mệt mỏi, chóng mặt.', 'Uống buổi sáng.', 'https://www.vinmec.com/vie/bai-viet/thuoc-dieu-tri-roi-loan-lipid-mau-vi'),
-(48, 'Lipitor 20mg', 'Atorvastatin', '20mg', NULL, 'Thuốc tim mạch – huyết áp – mỡ máu', 'https://cms-prod.s3-sgn09.fptcloud.com/00005598_lipitor_20mg_pfizer_3x10_4509.jpg', 1, 'Thuốc ức chế HMG-CoA reductase hạ cholesterol toàn phần và LDL.', 'Nơi khô, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '36 tháng', 'active', 'Viên', 'Bệnh gan nặng.', 'Tương tác thuốc chống nấm.', 'Giảm cholesterol LDL và phòng bệnh tim.', 'Theo dõi men gan.', 'Đau cơ, buồn nôn.', 'Uống 1 lần/ngày.', 'https://www.vinmec.com/vie/bai-viet/thuoc-dieu-tri-roi-loan-lipid-mau-vi'),
-(49, 'Vastarel MR 35mg', 'Trimetazidine', '35mg', NULL, 'Thuốc tim mạch – huyết áp – mỡ máu', 'https://cms-prod.s3-sgn09.fptcloud.com/00001097_vastarel_mr_35mg_servier_2x30_3136.jpg', 1, 'Phòng ngừa cơn đau thắt ngực ổn định.', 'Nơi khô, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '36 tháng', 'active', 'Viên', 'Bệnh Parkinson.', 'Chưa ghi nhận.', 'Điều trị đau thắt ngực ổn định.', 'Thận trọng người cao tuổi.', 'Chóng mặt, đau đầu.', 'Uống sau ăn.', 'https://www.vinmec.com/vie/bai-viet/thuoc-dieu-tri-roi-loan-lipid-mau-vi'),
-(50, 'Blackmores Multivitamin', 'Vitamin & Khoáng chất', 'Nhiều loại', NULL, 'Vitamin – thực phẩm chức năng', 'https://cms-prod.s3-sgn09.fptcloud.com/00502127_vien_uong_blackmores_mens_performance_multi_bo_sung_vitamin_cho_nam_gioi_50_vien_8350.jpg', 1, 'Thực phẩm bảo vệ sức khỏe bổ sung vitamin tổng hợp.', 'Nơi khô ráo, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '36 tháng', 'active', 'Chai', 'Quá mẫn với thành phần.', 'Có thể tương tác với thuốc khác.', 'Bổ sung vitamin và khoáng chất cho cơ thể.', 'Không dùng quá liều khuyến cáo.', 'Rối loạn tiêu hóa nhẹ.', 'Uống sau bữa ăn.', 'https://www.vinmec.com/vie/chu-de/vitamin'),
-(51, 'Doppelherz Aktiv Omega 3', 'Dầu cá (EPA, DHA), Vitamin E', '2000mg dầu cá', NULL, 'Vitamin – thực phẩm chức năng', 'https://cms-prod.s3-sgn09.fptcloud.com/00021669_doppelherz_omega_3_seefischol_1000mg_30_vien_2041_6339.jpg', 1, 'Hỗ trợ sức khỏe tim mạch, não bộ và thị lực.', 'Nơi khô ráo, dưới 25 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '36 tháng', 'active', 'Chai', 'Quá mẫn với thành phần.', 'Có thể tương tác với thuốc khác.', 'Bổ sung vitamin và khoáng chất cho cơ thể.', 'Không dùng quá liều khuyến cáo.', 'Rối loạn tiêu hóa nhẹ.', 'Uống sau bữa ăn.', 'https://www.vinmec.com/vie/chu-de/omega-3'),
-(52, 'Nature Made Vitamin C', 'Vitamin C', '500mg', NULL, 'Vitamin – thực phẩm chức năng', 'https://cms-prod.s3-sgn09.fptcloud.com/00021626_nature_made_vitamin_c_500mg_100_vien_9984_6339.jpg', 1, 'Tăng khả năng miễn dịch và chống oxy hóa cho cơ thể.', 'Nơi khô ráo, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '36 tháng', 'active', 'Chai', 'Quá mẫn với thành phần.', 'Có thể tương tác với thuốc khác.', 'Bổ sung vitamin và khoáng chất cho cơ thể.', 'Không dùng quá liều khuyến cáo.', 'Rối loạn tiêu hóa nhẹ.', 'Uống sau bữa ăn.', 'https://www.vinmec.com/vie/chu-de/vitamin-c'),
-(53, 'DHC Collagen', 'Collagen peptide từ cá', '2050mg', NULL, 'Vitamin – thực phẩm chức năng', 'https://cms-prod.s3-sgn09.fptcloud.com/00024484_vien_uong_collagen_dhg_30_ngay_3277.jpg', 1, 'Bổ sung collagen hỗ trợ làm đẹp da, tăng đàn hồi.', 'Nơi khô ráo, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '36 tháng', 'active', 'Gói', 'Quá mẫn với thành phần.', 'Có thể tương tác với thuốc khác.', 'Bổ sung vitamin và khoáng chất cho cơ thể.', 'Không dùng quá liều khuyến cáo.', 'Rối loạn tiêu hóa nhẹ.', 'Uống sau bữa ăn.', 'https://www.vinmec.com/vie/chu-de/collagen'),
-(54, 'Centrum A-Z', 'Vitamin & Khoáng chất', 'Đa vitamin', NULL, 'Vitamin – thực phẩm chức năng', 'https://image.uniqlo.com/UQ/ST3/vn/imagesgoods/451433/item/vngoods_12_451433.jpg', 1, 'Bổ sung đầy đủ vi chất dinh dưỡng hàng ngày.', 'Nơi khô ráo, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '24 tháng', 'active', 'Chai', 'Quá mẫn với thành phần.', 'Có thể tương tác với thuốc khác.', 'Bổ sung vitamin và khoáng chất cho cơ thể.', 'Không dùng quá liều khuyến cáo.', 'Rối loạn tiêu hóa nhẹ.', 'Uống sau bữa ăn.', 'https://www.vinmec.com/vie/chu-de/vitamin'),
-(55, 'Pharmaton', 'G115, Vitamin & Khoáng chất', 'Viên nang', NULL, 'Vitamin – thực phẩm chức năng', 'https://cms-prod.s3-sgn09.fptcloud.com/00001098_pharmaton_vitality_60_vien_7190.jpg', 1, 'Tăng cường sức khỏe khi mệt mỏi, kén ăn, suy nhược.', 'Nơi khô ráo,ưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '24 tháng', 'active', 'Chai', 'Quá mẫn với thành phần.', 'Có thể tương tác với thuốc khác.', 'Bổ sung vitamin và khoáng chất cho cơ thể.', 'Không dùng quá liều khuyến cáo.', 'Rối loạn tiêu hóa nhẹ.', 'Uống sau bữa ăn.', 'https://www.vinmec.com/vie/chu-de/vitamin'),
-(56, 'NattoEnzym 670FU', 'Nattokinase', '670FU', NULL, 'Vitamin – thực phẩm chức năng', 'https://cms-prod.s3-sgn09.fptcloud.com/00021634_nattoenzym_670fu_duoc_hau_giang_3x10_8698_6339.jpg', 1, 'Hỗ trợ tuần hoàn máu, giải tán cục máu đông, phòng đột quỵ.', 'Nơi khô ráo, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '24 tháng', 'active', 'Chai', 'Quá mẫn với thành phần.', 'Có thể tương tác với thuốc khác.', 'Bổ sung vitamin và khoáng chất cho cơ thể.', 'Không dùng quá liều khuyến cáo.', 'Rối loạn tiêu hóa nhẹ.', 'Uống sau bữa ăn.', 'https://www.vinmec.com/vie/chu-de/nattokinase'),
-(57, 'Bocalex Multi', 'Vitamin B + C', 'Viên sủi', NULL, 'Vitamin – thực phẩm chức năng', 'https://cms-prod.s3-sgn09.fptcloud.com/00018597_bocalex_multi_20_vien_sui_7553.jpg', 1, 'Viên sủi bổ sung vitamin nhanh chóng phục hồi thể lực.', 'Nơi khô ráo, tránh ẩm.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '24 tháng', 'active', 'Tuýp', 'Quá mẫn với thành phần.', 'Có thể tương tác với thuốc khác.', 'Bổ sung vitamin và khoáng chất cho cơ thể.', 'Không dùng quá liều khuyến cáo.', 'Rối loạn tiêu hóa nhẹ.', 'Uống sau bữa ăn.', 'https://www.vinmec.com/vie/chu-de/vitamin-b'),
-(58, 'Daily-Vits', 'Vitamin & Khoáng chất', 'Đa vitamin', NULL, 'Vitamin – thực phẩm chức năng', 'https://image.uniqlo.com/UQ/ST3/vn/imagesgoods/451433/item/vngoods_12_451433.jpg', 1, 'Bổ sung dinh dưỡng thiết yếu duy trì sức khỏe tổng thể.', 'Nơi khô ráo, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '36 tháng', 'active', 'Chai', 'Quá mẫn với thành phần.', 'Có thể tương tác với thuốc khác.', 'Bổ sung vitamin và khoáng chất cho cơ thể.', 'Không dùng quá liều khuyến cáo.', 'Rối loạn tiêu hóa nhẹ.', 'Uống sau bữa ăn.', 'https://www.vinmec.com/vie/chu-de/vitamin'),
-(59, 'Apisatone', 'Sữa ong chúa, mật ong, vitamin', '10ml', NULL, 'Vitamin – thực phẩm chức năng', 'https://cms-prod.s3-sgn09.fptcloud.com/00000490_siro_ho_astex_90ml_4091_6339.jpg', 1, 'Thuốc bổ chứa sữa ong chúa giúp bồi bổ cơ thể, tăng sức đề kháng.', 'Nơi khô ráo, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '24 tháng', 'active', 'Hộp', 'Quá mẫn với thành phần.', 'Có thể tương tác với thuốc khác.', 'Bổ sung vitamin và khoáng chất cho cơ thể.', 'Không dùng quá liều khuyến cáo.', 'Rối loạn tiêu hóa nhẹ.', 'Uống sau bữa ăn.', 'https://www.vinmec.com/vie/chu-de/sua-ong-chua'),
-(60, 'Pediakid Vitamin', '22 Vitamin & Oligo-elements', '125ml', NULL, 'Sản phẩm trẻ em – men – bổ sung', 'https://cms-prod.s3-sgn09.fptcloud.com/00502127_vien_uong_blackmores_mens_performance_multi_bo_sung_vitamin_cho_nam_gioi_50_vien_8350.jpg', 1, 'Bổ sung vitamin và khoáng chất cho trẻ từ 6 tháng tuổi.', 'Nơi khô ráo, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '36 tháng', 'active', 'Chai', 'Quá mẫn với thành phần.', 'Có thể tương tác với thuốc khác.', 'Bổ sung vitamin và khoáng chất cho cơ thể.', 'Không dùng quá liều khuyến cáo.', 'Rối loạn tiêu hóa nhẹ.', 'Uống sau bữa ăn.', 'https://www.vinmec.com/vie/chu-de/vitamin-d3'),
-(61, 'Fitobimbi Siro', 'Chiết xuất thảo dược Italy', '200ml', NULL, 'Sản phẩm trẻ em – men – bổ sung', 'https://cms-prod.s3-sgn09.fptcloud.com/00021634_nattoenzym_670fu_duoc_hau_giang_3x10_8698_6339.jpg', 1, 'Nhóm siro thảo dược Italy hỗ trợ bé ăn ngon, ngủ ngon.', 'Nơi khô ráo, dưới 30 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '36 tháng', 'active', 'Chai', 'Quá mẫn với thành phần.', 'Có thể tương tác với thuốc khác.', 'Bổ sung vitamin và khoáng chất cho cơ thể.', 'Không dùng quá liều khuyến cáo.', 'Rối loạn tiêu hóa nhẹ.', 'Uống sau bữa ăn.', 'https://www.vinmec.com/vie/chu-de/tre-em-va-dinh-duong'),
-(62, 'BioAmicus Vitamin D3', 'Vitamin D3 nguyên chất', '10ml', NULL, 'Sản phẩm trẻ em – men – bổ sung', 'https://cms-prod.s3-sgn09.fptcloud.com/00501192_biogaia_protectis_baby_drops_5ml_1863.jpg', 1, 'Vitamin D3 tinh khiết không mùi không vị cho trẻ sơ sinh.', 'Nơi khô ráo, dưới 25 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '24 tháng', 'active', 'Chai', 'Quá mẫn với thành phần.', 'Có thể tương tác với thuốc khác.', 'Bổ sung vitamin và khoáng chất cho cơ thể.', 'Không dùng quá liều khuyến cáo.', 'Rối loạn tiêu hóa nhẹ.', 'Uống sau bữa ăn.', 'https://www.vinmec.com/vie/chu-de/vitamin-d3'),
-(63, 'ChildLife Multivitamin', 'Vitamin & Khoáng chất dạng lỏng', '237ml', NULL, 'Sản phẩm trẻ em – men – bổ sung', 'https://cms-prod.s3-sgn09.fptcloud.com/00001037_cefixim_200mg_3x10_cuu_long_5177_6118_1633514757.jpg', 1, 'Cung cấp 23 loại vitamin và khoáng chất cần thiết nhất cho trẻ.', 'Nơi khô ráo, tránh ánh sáng.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '24 tháng', 'active', 'Chai', 'Quá mẫn với thành phần.', 'Có thể tương tác với thuốc khác.', 'Bổ sung vitamin và khoáng chất cho cơ thể.', 'Không dùng quá liều khuyến cáo.', 'Rối loạn tiêu hóa nhẹ.', 'Uống sau bữa ăn.', 'https://www.vinmec.com/vie/chu-de/vitamin-tre-em'),
-(64, 'Wellbaby Syrup', '14 Vitamin & Khoáng chất, Mạch nha', '150ml', NULL, 'Sản phẩm trẻ em – men – bổ sung', 'https://cms-prod.s3-sgn09.fptcloud.com/wellbaby_multi_vitamin_liquid_vitabiotics_ho_tro_suc_khoe_cho_be_150ml_7909_6372_1625907409.jpg', 1, 'Siro bổ sung kẽm, sắt và vitamin cho sự phát triển của bé.', 'Bảo quản nơi khô ráo, dưới 25 độ C.', NULL, NULL, NULL, 1, '2026-02-26 09:49:48', '2026-02-27 11:04:46', '36 tháng', 'active', 'Chai', 'Quá mẫn với thành phần.', 'Có thể tương tác với thuốc khác.', 'Bổ sung vitamin và khoáng chất cho cơ thể.', 'Không dùng quá liều khuyến cáo.', 'Rối loạn tiêu hóa nhẹ.', 'Uống sau bữa ăn.', 'https://www.vinmec.com/vie/chu-de/vitamin-tre-em');
-
--- --------------------------------------------------------
+LOCK TABLES `drug_products` WRITE;
+/*!40000 ALTER TABLE `drug_products` DISABLE KEYS */;
+INSERT INTO `drug_products` VALUES (19,'Augmentin 1g','Amoxicillin + Acid Clavulanic','875mg/125mg',NULL,'Kháng sinh – thuốc kê đơn','http://localhost:8080/uploads/7d85649e-22ae-4997-87bf-39f7e2efe8f6.jpeg',1,'Kháng sinh phổ rộng điều trị nhiễm khuẩn đường hô hấp, tiết niệu, da và mô mềm.','Nơi khô, dưới 30 độ C, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','24 tháng','active','Viên','Dị ứng với amoxicillin, acid clavulanic hoặc kháng sinh beta-lactam; tiền sử vàng da/viêm gan do thuốc.','Probenecid làm tăng nồng độ amoxicillin; giảm hiệu quả thuốc tránh thai đường uống; tương tác với allopurinol có thể tăng nguy cơ phát ban.','Điều trị các nhiễm khuẩn do vi khuẩn nhạy cảm như: viêm amidan, viêm xoang, viêm tai giữa, viêm phế quản và viêm phổi; nhiễm khuẩn tiết niệu và nhiễm khuẩn da và mô mềm.','Theo dõi chức năng gan, thận khi dùng kéo dài; thận trọng ở bệnh nhân dị ứng penicillin trước đó.','Tiêu chảy, buồn nôn, đau bụng, phát ban; hiếm gặp: phản vệ, viêm đại tràng giả mạc.','Uống trong bữa ăn để giảm kích ứng dạ dày; dùng đủ liệu trình theo chỉ định bác sĩ.','https://medlatec.vn/tin-tuc/augmentin-1g-tac-dung-lieu-dung-va-nhung-luu-y-khi-su-dung-s195-n18198'),(20,'Klamentin 625','Amoxicillin + Acid Clavulanic','500mg/125mg',NULL,'Kháng sinh – thuốc kê đơn','https://cms-prod.s3-sgn09.fptcloud.com/dsc_0528_403c4f796d.jpg',1,'Kháng sinh phối hợp điều trị nhiễm khuẩn nhạy cảm với Amoxicillin.','Nơi khô, dưới 30 độ C, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','24 tháng','active','Viên','Quá mẫn với penicillin, cephalosporin hoặc thành phần thuốc.','Giống Augmentin; probenecid làm tăng nồng độ thuốc.','Điều trị nhiễm khuẩn hô hấp trên, viêm tai giữa, nhiễm khuẩn tiết niệu và da.','Thận trọng khi suy gan, suy thận; theo dõi men gan.','Buồn nôn, tiêu chảy, phát ban da.','Uống đầu bữa ăn, theo lịch triều bác sĩ.','https://www.vinmec.com/vie/bai-viet/cong-dung-cua-thuoc-klamentin-625-mg-vi'),(21,'Klamentin 1g','Amoxicillin + Acid Clavulanic','875mg/125mg',NULL,'Kháng sinh – thuốc kê đơn','https://cms-prod.s3-sgn09.fptcloud.com/00018596_klamentin_1g_duoc_hau_giang_2x7_5475_6207_1637731778.jpg',1,'Kháng sinh hàm lượng cao cho các nhiễm khuẩn nặng đường hô hấp, tiết niệu.','Nơi khô, dưới 30 độ C, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','24 tháng','active','Viên','Quá mẫn với amoxicillin/clavulanate; rối loạn chức năng gan nghiêm trọng.','Tương tự Augmentin.','Điều trị nhiễm khuẩn nặng đường hô hấp, mô mềm và viêm phổi.','Điều chỉnh liều ở người suy thận; theo dõi chức năng gan.','Đau bụng, tiêu chảy, phát ban.','Uống theo liều bác sĩ khuyến cáo.','https://www.vinmec.com/vie/bai-viet/klamentin-1g-la-thuoc-gi-vi'),(22,'Zinnat 500mg','Cefuroxim axetil','500mg',NULL,'Kháng sinh – thuốc kê đơn','https://cms-prod.s3-sgn09.fptcloud.com/00003460_zinnat_500mg_hang_nhap_khau_1v_6380_6339_1633512301.jpg',1,'Kháng sinh nhóm Cephalosporin thế hệ 2 điều trị nhiễm khuẩn hiệu quả.','Nơi khô, dưới 30 độ C, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','36 tháng','active','Viên','Dị ứng cephalosporin; tiền sử phản ứng nặng với penicillin.','Probenecid làm tăng nồng độ thuốc.','Điều trị nhiễm khuẩn hô hấp, nhiễm khuẩn da và đường tiết niệu nhạy cảm với cefuroxim.','Thận trọng ở bệnh nhân dị ứng beta-lactam.','Tiêu chảy, buồn nôn, đau bụng.','Uống sau ăn để cải thiện hấp thu.','http://vinmec.com/vie/bai-viet/zinnat-cap-nhat-thong-tin-su-dung-vi'),(23,'Medoclav 1g','Amoxicillin + Acid Clavulanic','875mg/125mg',NULL,'Kháng sinh – thuốc kê đơn','https://cms-prod.s3-sgn09.fptcloud.com/00000002_medoclav_1g_medochemie_2x7_5568_6142_1634629452.jpg',1,'Kháng sinh phối hợp giúp chống lại vi khuẩn kháng thuốc.','Nơi khô, dưới 30 độ C, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','24 tháng','active','Viên','Quá mẫn với penicillin hoặc beta-lactam.','Tương tác probenecid.','Điều trị nhiễm khuẩn do vi khuẩn nhạy cảm như viêm tai giữa, viêm xoang, nhiễm khuẩn da và mô mềm.','Theo dõi chức năng gan; thận trọng ở người có tiền sử dị ứng penicillin.','Buồn nôn, tiêu chảy, đau đầu.','Uống theo hướng dẫn, không bỏ liều giữa chừng.','https://www.vinmec.com/vie/bai-viet/cong-dung-thuoc-medoclav-vi'),(24,'Cefixim 200mg','Cefixim','200mg',NULL,'Kháng sinh – thuốc kê đơn','https://cms-prod.s3-sgn09.fptcloud.com/00001037_cefixim_200mg_3x10_cuu_long_5177_6118_1633514757.jpg',1,'Kháng sinh Cephalosporin thế hệ 3, dùng cho nhiễm khuẩn hô hấp và tiết niệu.','Nơi khô, dưới 30 độ C, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','36 tháng','active','Viên','Dị ứng cephalosporin.','Probenecid làm tăng nồng độ thuốc.','Điều trị nhiễm khuẩn như viêm phổi, viêm họng, nhiễm khuẩn tiết niệu.','Theo dõi chức năng thận ở bệnh nhân suy thận.','Tiêu chảy, đau bụng.','Uống 1–2 lần/ngày theo chỉ định.','https://medlatec.vn/tin-tuc/cefixime-thuoc-khang-sinh-dieu-tri-nhiem-trung-nhung-can-can-trong-khi-dung'),(25,'Cefuroxim 500mg','Cefuroxim','500mg',NULL,'Kháng sinh – thuốc kê đơn','https://cms-prod.s3-sgn09.fptcloud.com/00000300_cefuroxim_500mg_vidipha_2x5_5548_6097_1634542284.jpg',1,'Điều trị các nhiễm khuẩn do vi khuẩn nhạy cảm gây ra.','Nơi khô, dưới 30 độ C, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','36 tháng','active','Viên','Quá mẫn cephalosporin.','Probenecid làm tăng thuốc trong máu.','Điều trị viêm xoang, viêm phổi, nhiễm khuẩn tiết niệu.','Theo dõi chức năng thận.','Buồn nôn, tiêu chảy.','Uống sau bữa ăn.','https://www.vinmec.com/vie/bai-viet/thuoc-cefuroxim-500mg-tri-benh-gi-vi'),(26,'Levofloxacin 500mg','Levofloxacin','500mg',NULL,'Kháng sinh – thuốc kê đơn','https://cms-prod.s3-sgn09.fptcloud.com/00007887_levofloxacin_500mg_pymepharco_2x10_8147_6151_1637731777.jpg',1,'Kháng sinh nhóm Fluoroquinolone cho nhiễm khuẩn nặng hô hấp và da.','Nơi khô, dưới 30 độ C, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','36 tháng','active','Viên','Dị ứng quinolone; trẻ em và người mang thai trừ chỉ định đặc biệt.','Thuốc kháng acid làm giảm hấp thu.','Điều trị nhiễm khuẩn phổi, tiết niệu và da do vi khuẩn nhạy cảm.','Nguy cơ viêm gân ở người già; thận trọng suy thận.','Chóng mặt, buồn nôn, đau đầu.','Uống nhiều nước, tránh dùng cùng các chất chứa kim loại.','https://www.vinmec.com/vie/bai-viet/cong-dung-thuoc-levofloxacin-stada-500-mg-vi'),(27,'Moxifloxacin 400mg','Moxifloxacin','400mg',NULL,'Kháng sinh – thuốc kê đơn','https://cms-prod.s3-sgn09.fptcloud.com/00007843_moxifloxacin_400mg_pymepharco_1x10_3735_6169_1637731779.jpg',1,'Kháng sinh phổ rộng điều trị viêm phổi và các nhiễm khuẩn phức tạp.','Nơi khô, dưới 30 độ C, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','36 tháng','active','Viên','Dị ứng quinolone; tiền sử rối loạn nhịp.','Thuốc kháng acid làm giảm hấp thu.','Điều trị viêm phổi cộng đồng và các nhiễm khuẩn phức tạp.','Thận trọng ở bệnh nhân bệnh tim và nhịp QT kéo dài.','Buồn nôn, đau đầu, tiêu chảy.','Uống theo chỉ định, tránh dùng cùng sữa.','https://nhathuoclongchau.com.vn/thanh-phan/moxifloxacin'),(28,'Azithromycin 500mg','Azithromycin','500mg',NULL,'Kháng sinh – thuốc kê đơn','http://localhost:8080/uploads/a64de0be-0d46-4dea-bfb9-ae7ec4ce0d6f.webp',1,'Kháng sinh nhóm Macrolide điều trị nhiễm khuẩn hô hấp, liều ngắn ngày.','Nơi khô, dưới 30 độ C, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','24 tháng','active','Viên','Dị ứng azithromycin hoặc macrolid.','Tương tác với thuốc chống đông.','Điều trị nhiễm khuẩn đường hô hấp, viêm họng và nhiễm khuẩn da.','Thận trọng ở bệnh nhân bệnh gan nặng.','Tiêu chảy, buồn nôn, đau bụng.','Uống 1 lần/ngày theo liệu trình.','https://www.vinmec.com/vie/bai-viet/thuoc-azithromycin-cong-dung-chi-dinh-va-luu-y-khi-dung-vi'),(29,'Nexium 40mg','Esomeprazol','40mg',NULL,'Thuốc dạ dày – tiêu hóa','https://cms-prod.s3-sgn09.fptcloud.com/00000052_nexium_40mg_astrazeneca_2x7_5365.jpg',1,'Thuốc ức chế bơm proton điều trị trào ngược dạ dày (GERD) và viêm loét.','Nơi khô, dưới 30 độ C, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','36 tháng','active','Viên','Quá mẫn với esomeprazole hoặc PPI.','Giảm hấp thu ketoconazole và thuốc HIV; tương tác với clopidogrel.','Điều trị trào ngược dạ dày thực quản (GERD) và loét dạ dày tá tràng.','Dùng lâu có thể giảm hấp thu vitamin B12.','Đau đầu, buồn nôn, tiêu chảy.','Uống trước bữa ăn 30–60 phút.','https://medlatec.vn/tin-tuc/thuoc-da-day-nexium-40mg-va-6-thong-tin-can-biet-truoc-khi-su-dung'),(30,'Esomeprazol STADA 40mg','Esomeprazol','40mg',NULL,'Thuốc dạ dày – tiêu hóa','https://cms-prod.s3-sgn09.fptcloud.com/00021615_esomeprazol_stada_40mg_stada_4x7_5474_6010_1633513303.jpg',1,'Giảm tiết acid dạ dày, hỗ trợ điều trị viêm loét và HP.','Nơi khô, dưới 30 độ C, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','24 tháng','active','Viên','Dị ứng PPI.','Tương tác thuốc hấp thu acid dạ dày.','Điều trị GERD, loét dạ dày tá tràng và hội chứng tăng acid.','Theo dõi khi dùng dài ngày.','Đau đầu, tiêu chảy.','Uống trước ăn để hiệu quả tối ưu.','https://nhathuoclongchau.com.vn/thuoc/esomeprazole-stada-40mg-2x10-33212.html'),(31,'Pantoprazol 40mg','Pantoprazol','40mg',NULL,'Thuốc dạ dày – tiêu hóa','https://cms-prod.s3-sgn09.fptcloud.com/00009653_pantoprazol_stada_40mg_stada_4x7_8984_6168.jpg',1,'Thuốc ức chế bơm proton thế hệ mới, điều trị loét dạ dày tá tràng.','Nơi khô, dưới 30 độ C, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','36 tháng','active','Viên','Quá mẫn với pantoprazole hoặc thuốc ức chế bơm proton.','Giảm hấp thu thuốc phụ thuộc pH dạ dày như ketoconazole.','Điều trị trào ngược dạ dày thực quản (GERD), viêm thực quản do acid, loét dạ dày tá tràng.','Dùng dài ngày có thể giảm hấp thu vitamin B12 và magnesi.','Đau đầu, tiêu chảy, đau bụng, buồn nôn.','Uống trước bữa ăn khoảng 30 phút.','https://www.vinmec.com/vie/bai-viet/cong-dung-thuoc-pantoprazol-40mg-vi'),(32,'Gaviscon hộp','Natri alginate, Natri bicarbonat, Calci carbonat','Hỗn dịch',NULL,'Thuốc dạ dày – tiêu hóa','https://cms-prod.s3-sgn09.fptcloud.com/00010903_gaviscon_dual_action_r_10ml_24v_7366.jpg',1,'Tạo lớp màng bảo vệ ngăn chặn trào ngược acid dạ dày, giảm ợ nóng.','Nơi khô, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','24 tháng','active','Hộp','Quá mẫn với alginate hoặc bicarbonate.','Có thể ảnh hưởng hấp thu thuốc khác nếu dùng cùng lúc.','Điều trị trào ngược dạ dày, ợ nóng và khó tiêu do acid.','Thận trọng ở bệnh nhân suy thận hoặc hạn chế natri.','Táo bón nhẹ, đầy hơi.','Uống sau bữa ăn và trước khi ngủ.','https://www.vinmec.com/vie/bai-viet/thuoc-gaviscon-tac-dung-lieu-dung-va-luu-y-su-dung-vi'),(33,'Enterogermina','Bacillus clausii','2 tỷ bào tử',NULL,'Thuốc dạ dày – tiêu hóa','https://cms-prod.s3-sgn09.fptcloud.com/00004944_enterogermina_2ty_5ml_20_ong_8223.jpg',1,'Men vi sinh bổ sung lợi khuẩn, phòng và điều trị rối loạn tiêu hóa.','Nơi khô, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','24 tháng','active','Ống','Quá mẫn với Bacillus clausii.','Kháng sinh có thể làm giảm hiệu quả.','Phòng và điều trị rối loạn hệ vi sinh đường ruột, tiêu chảy do kháng sinh.','Không pha với nước nóng.','Ít gặp: đầy hơi, khó chịu nhẹ.','Uống trực tiếp hoặc pha với nước.','https://nhathuoclongchau.com.vn/thuoc/enterogemina-5ml-sanofi-20-ong-17315.html'),(34,'BioGaia Probiotic','Lactobacillus reuteri Protectis','5ml',NULL,'Thuốc dạ dày – tiêu hóa','https://cms-prod.s3-sgn09.fptcloud.com/00501192_biogaia_protectis_baby_drops_5ml_1863.jpg',1,'Men vi sinh từ Thụy Điển giúp cải thiện hệ tiêu hóa cho trẻ em.','Bảo quản dưới 25 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','24 tháng','active','Chai','Dị ứng với Lactobacillus reuteri.','Không đáng kể.','Bổ sung lợi khuẩn giúp cải thiện tiêu hóa ở trẻ.','Bảo quản đúng nhiệt độ.','Ít gặp: đầy hơi.','Nhỏ trực tiếp vào miệng hoặc pha với sữa.','https://medlatec.vn/tin-tuc/tim-hieu-men-tieu-hoa-biogaia-va-cach-su-dung-an-toan-hieu-qua'),(35,'Smecta hộp','Diosmectite','3g',NULL,'Thuốc dạ dày – tiêu hóa','https://cms-prod.s3-sgn09.fptcloud.com/00014059_smecta_v_cam_chanh_30g_7718.jpg',1,'Thuốc hấp phụ bảo vệ niêm mạc đường tiêu hóa, điều trị tiêu chảy.','Nơi khô, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','36 tháng','active','Hộp','Quá mẫn với diosmectite.','Có thể giảm hấp thu thuốc khác.','Điều trị tiêu chảy cấp và mạn, bảo vệ niêm mạc tiêu hóa.','Thận trọng khi dùng cho trẻ nhỏ.','Táo bón nhẹ.','Pha gói thuốc với nước trước khi uống.','https://www.vinmec.com/vie/bai-viet/thuoc-smecta-chu-y-lieu-dung-va-huong-dan-su-dung-dung-cach-vi'),(36,'Biosubtyl-II','Bacillus subtilis','1 tỷ bào tử',NULL,'Thuốc dạ dày – tiêu hóa','https://cms-prod.s3-sgn09.fptcloud.com/00000405_biosubtyl_ii_dalat_25_goi_x_1g_1411_6345.jpg',1,'Vi khuẩn sống có lợi cho đường ruột, hỗ trợ tiêu hóa.','Nơi khô, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','24 tháng','active','Gói','Dị ứng với Bacillus subtilis.','Kháng sinh có thể làm giảm hiệu quả.','Bổ sung vi khuẩn có lợi cho đường ruột.','Không dùng với nước nóng.','Đầy hơi nhẹ.','Uống sau ăn.','https://tpvnpharma.com/biosubtyl-ii'),(37,'Prospan Siro','Cao khô lá thường xuân','100ml',NULL,'Thuốc ho – hô hấp – siro','https://cms-prod.s3-sgn09.fptcloud.com/00000941_siro_ho_prospan_100ml_3756.jpg',1,'Siro ho thảo dược giúp long đờm, giảm ho cho trẻ em và người lớn.','Nơi khô, dưới 25 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:03:34','36 tháng','active','Chai','Dị ứng với cao lá thường xuân.','Không đáng kể.','Giảm ho, long đờm trong viêm phế quản.','Thận trọng ở trẻ dưới 2 tuổi.','Rối loạn tiêu hóa nhẹ.','Uống theo liều khuyến cáo.','https://www.vinmec.com/vie/bai-viet/huong-dan-su-dung-thuoc-ho-prospan-dang-siro-vien-ngam-cho-tre-vi'),(38,'Muhi Siro trẻ em','Chiết xuất thảo dược','120ml',NULL,'Thuốc ho – hô hấp – siro','https://cms-prod.s3-sgn09.fptcloud.com/wellbaby_multi_vitamin_liquid_vitabiotics_ho_tro_suc_khoe_cho_be_150ml_7909_6372_1625907409.jpg',1,'Siro ho Nhật Bản với các hương vị dễ uống dành cho trẻ em.','Nơi khô, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:45','24 tháng','active','Chai','Quá mẫn với thành phần.','Không đáng kể.','Giảm ho và long đờm cho trẻ em.','Thận trọng ở trẻ nhỏ.','Buồn ngủ nhẹ.','Dùng theo liều khuyến cáo.','https://www.vinmec.com/vie/bai-viet/tac-dung-phu-co-gap-khi-su-dung-khang-sinh-azithromycin-vi'),(39,'Astex Siro','Húng chanh, Núc nác, Cineol','90ml',NULL,'Thuốc ho – hô hấp – siro','https://cms-prod.s3-sgn09.fptcloud.com/00000490_siro_ho_astex_90ml_4091_6339.jpg',1,'Siro ho thảo dược bệnh viện Nhi Đồng 1 sản xuất.','Nơi khô, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:45','24 tháng','active','Chai','Quá mẫn với thành phần thảo dược.','Không đáng kể.','Điều trị ho do viêm họng hoặc cảm lạnh.','Thận trọng với trẻ nhỏ.','Rối loạn tiêu hóa nhẹ.','Uống sau ăn.','https://www.vinmec.com/vie/bai-viet/tac-dung-phu-co-gap-khi-su-dung-khang-sinh-azithromycin-vi'),(40,'Bổ phế Nam Hà chai','Cát cánh, Tỳ bà diệp, Mơ muối...','125ml',NULL,'Thuốc ho – hô hấp – siro','https://cms-prod.s3-sgn09.fptcloud.com/00001099_thuoc_ho_bo_phe_nam_ha_chi_khai_lo_125ml_4366.jpg',1,'Thuốc ho đông dược truyền thống giúp bổ phế, chỉ khái.','Nơi khô, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','36 tháng','active','Chai','Dị ứng với thành phần đông dược.','Chưa ghi nhận.','Giảm ho, long đờm, hỗ trợ điều trị viêm phế quản.','Không dùng quá liều.','Ít gặp.','Uống theo liều hướng dẫn.','https://www.vinmec.com/vie/bai-viet/tac-dung-phu-co-gap-khi-su-dung-khang-sinh-azithromycin-vi'),(41,'Eugica Siro','Eucalyptol, Gừng, Tần, Menthol','100ml',NULL,'Thuốc ho – hô hấp – siro','https://cms-prod.s3-sgn09.fptcloud.com/00000412_siro_ho_eugica_100ml_1752.jpg',1,'Siro ho thảo dược giúp sát trùng đường hô hấp, làm dịu cơn ho.','Nơi khô, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','24 tháng','active','Chai','Quá mẫn với tinh dầu.','Có thể tương tác thuốc an thần.','Giảm ho, sát trùng đường hô hấp.','Không dùng quá liều.','Buồn nôn nhẹ.','Uống sau ăn.','https://www.vinmec.com/vie/bai-viet/tac-dung-phu-co-gap-khi-su-dung-khang-sinh-azithromycin-vi'),(42,'Toplexil Siro','Oxomemazine, Guaifenesin','125ml',NULL,'Thuốc ho – hô hấp – siro','https://cms-prod.s3-sgn09.fptcloud.com/00024479_siro_toplexil_sanofi_125ml_8700.jpg',1,'Thuốc trị ho có đờm và ho khan do kích ứng.','Nơi khô, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','36 tháng','active','Chai','Trẻ nhỏ dưới 2 tuổi.','Tăng tác dụng khi dùng cùng thuốc an thần.','Điều trị ho khan và ho có đờm.','Không lái xe khi dùng.','Buồn ngủ, chóng mặt.','Uống theo chỉ định bác sĩ.','https://www.vinmec.com/vie/bai-viet/tac-dung-phu-co-gap-khi-su-dung-khang-sinh-azithromycin-vi'),(43,'Plavix 75mg','Clopidogrel','75mg',NULL,'Thuốc tim mạch – huyết áp – mỡ máu','https://cms-prod.s3-sgn09.fptcloud.com/00001859_plavix_75mg_28v_6221.jpg',1,'Thuốc chống kết tập tiểu cầu, phòng ngừa đột quỵ và nhồi máu cơ tim.','Nơi khô, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','36 tháng','active','Viên','Xuất huyết đang tiến triển.','Tương tác thuốc chống đông.','Phòng ngừa nhồi máu cơ tim và đột quỵ.','Thận trọng ở bệnh nhân nguy cơ chảy máu.','Chảy máu, bầm tím.','Uống mỗi ngày một lần.','https://www.vinmec.com/vie/bai-viet/thuoc-rosuvastatin-cong-dung-lieu-dung-va-luu-y-tac-dung-phu-vi'),(44,'Crestor 10mg','Rosuvastatin','10mg',NULL,'Thuốc tim mạch – huyết áp – mỡ máu','https://cms-prod.s3-sgn09.fptcloud.com/00000055_crestor_10mg_astrazeneca_2x14_9495.jpg',1,'Thuốc hạ mỡ máu nhóm Statin hiệu quả cao.','Nơi khô, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','36 tháng','active','Viên','Bệnh gan hoạt động.','Antacid có thể giảm hấp thu.','Giảm cholesterol và phòng bệnh tim mạch.','Theo dõi chức năng gan.','Đau cơ, đau đầu.','Uống mỗi ngày một lần.','https://www.vinmec.com/vie/bai-viet/thuoc-crestor-cong-dung-chi-dinh-va-luu-y-khi-dung-vi'),(45,'Crestor 20mg','Rosuvastatin','20mg',NULL,'Thuốc tim mạch – huyết áp – mỡ máu','https://cms-prod.s3-sgn09.fptcloud.com/00005597_crestor_20mg_astrazeneca_2x14_6380.jpg',1,'Mức liều 20mg cho bệnh nhân mỡ máu cao nặng.','Nơi khô, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','36 tháng','active','Viên','Bệnh gan nặng.','Tương tác antacid.','Điều trị tăng cholesterol máu nặng.','Theo dõi men gan.','Đau cơ, rối loạn tiêu hóa.','Uống 1 lần/ngày.','https://www.vinmec.com/vie/bai-viet/thuoc-crestor-cong-dung-chi-dinh-va-luu-y-khi-dung-vi'),(46,'Coveram','Perindopril + Amlodipin','5mg/5mg',NULL,'Thuốc tim mạch – huyết áp – mỡ máu','https://cms-prod.s3-sgn09.fptcloud.com/00021319_coveram_5mg_5mg_servier_1x30_8932.jpg',1,'Thuốc phối hợp điều trị tăng huyết áp vô căn.','Nơi khô, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','24 tháng','active','Viên','Hạ huyết áp nặng.','Thuốc lợi tiểu tăng tác dụng hạ áp.','Điều trị tăng huyết áp.','Theo dõi huyết áp.','Chóng mặt, đau đầu.','Uống mỗi ngày một lần.','https://www.vinmec.com/vie/bai-viet/thuoc-dieu-tri-roi-loan-lipid-mau-vi'),(47,'Concor 5mg','Bisoprolol fumarate','5mg',NULL,'Thuốc tim mạch – huyết áp – mỡ máu','https://cms-prod.s3-sgn09.fptcloud.com/00003023_concor_5mg_merck_3x10_8698.jpg',1,'Thuốc chẹn beta điều trị huyết áp và suy tim.','Nơi khô, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','36 tháng','active','Viên','Nhịp tim chậm.','Thuốc hạ áp khác tăng tác dụng.','Điều trị tăng huyết áp và suy tim.','Không ngừng thuốc đột ngột.','Mệt mỏi, chóng mặt.','Uống buổi sáng.','https://www.vinmec.com/vie/bai-viet/thuoc-dieu-tri-roi-loan-lipid-mau-vi'),(48,'Lipitor 20mg','Atorvastatin','20mg',NULL,'Thuốc tim mạch – huyết áp – mỡ máu','https://cms-prod.s3-sgn09.fptcloud.com/00005598_lipitor_20mg_pfizer_3x10_4509.jpg',1,'Thuốc ức chế HMG-CoA reductase hạ cholesterol toàn phần và LDL.','Nơi khô, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','36 tháng','active','Viên','Bệnh gan nặng.','Tương tác thuốc chống nấm.','Giảm cholesterol LDL và phòng bệnh tim.','Theo dõi men gan.','Đau cơ, buồn nôn.','Uống 1 lần/ngày.','https://www.vinmec.com/vie/bai-viet/thuoc-dieu-tri-roi-loan-lipid-mau-vi'),(49,'Vastarel MR 35mg','Trimetazidine','35mg',NULL,'Thuốc tim mạch – huyết áp – mỡ máu','https://cms-prod.s3-sgn09.fptcloud.com/00001097_vastarel_mr_35mg_servier_2x30_3136.jpg',1,'Phòng ngừa cơn đau thắt ngực ổn định.','Nơi khô, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','36 tháng','active','Viên','Bệnh Parkinson.','Chưa ghi nhận.','Điều trị đau thắt ngực ổn định.','Thận trọng người cao tuổi.','Chóng mặt, đau đầu.','Uống sau ăn.','https://www.vinmec.com/vie/bai-viet/thuoc-dieu-tri-roi-loan-lipid-mau-vi'),(50,'Blackmores Multivitamin','Vitamin & Khoáng chất','Nhiều loại',NULL,'Vitamin – thực phẩm chức năng','https://cms-prod.s3-sgn09.fptcloud.com/00502127_vien_uong_blackmores_mens_performance_multi_bo_sung_vitamin_cho_nam_gioi_50_vien_8350.jpg',1,'Thực phẩm bảo vệ sức khỏe bổ sung vitamin tổng hợp.','Nơi khô ráo, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','36 tháng','active','Chai','Quá mẫn với thành phần.','Có thể tương tác với thuốc khác.','Bổ sung vitamin và khoáng chất cho cơ thể.','Không dùng quá liều khuyến cáo.','Rối loạn tiêu hóa nhẹ.','Uống sau bữa ăn.','https://www.vinmec.com/vie/chu-de/vitamin'),(51,'Doppelherz Aktiv Omega 3','Dầu cá (EPA, DHA), Vitamin E','2000mg dầu cá',NULL,'Vitamin – thực phẩm chức năng','https://cms-prod.s3-sgn09.fptcloud.com/00021669_doppelherz_omega_3_seefischol_1000mg_30_vien_2041_6339.jpg',1,'Hỗ trợ sức khỏe tim mạch, não bộ và thị lực.','Nơi khô ráo, dưới 25 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','36 tháng','active','Chai','Quá mẫn với thành phần.','Có thể tương tác với thuốc khác.','Bổ sung vitamin và khoáng chất cho cơ thể.','Không dùng quá liều khuyến cáo.','Rối loạn tiêu hóa nhẹ.','Uống sau bữa ăn.','https://www.vinmec.com/vie/chu-de/omega-3'),(52,'Nature Made Vitamin C','Vitamin C','500mg',NULL,'Vitamin – thực phẩm chức năng','https://cms-prod.s3-sgn09.fptcloud.com/00021626_nature_made_vitamin_c_500mg_100_vien_9984_6339.jpg',1,'Tăng khả năng miễn dịch và chống oxy hóa cho cơ thể.','Nơi khô ráo, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','36 tháng','active','Chai','Quá mẫn với thành phần.','Có thể tương tác với thuốc khác.','Bổ sung vitamin và khoáng chất cho cơ thể.','Không dùng quá liều khuyến cáo.','Rối loạn tiêu hóa nhẹ.','Uống sau bữa ăn.','https://www.vinmec.com/vie/chu-de/vitamin-c'),(53,'DHC Collagen','Collagen peptide từ cá','2050mg',NULL,'Vitamin – thực phẩm chức năng','https://cms-prod.s3-sgn09.fptcloud.com/00024484_vien_uong_collagen_dhg_30_ngay_3277.jpg',1,'Bổ sung collagen hỗ trợ làm đẹp da, tăng đàn hồi.','Nơi khô ráo, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','36 tháng','active','Gói','Quá mẫn với thành phần.','Có thể tương tác với thuốc khác.','Bổ sung vitamin và khoáng chất cho cơ thể.','Không dùng quá liều khuyến cáo.','Rối loạn tiêu hóa nhẹ.','Uống sau bữa ăn.','https://www.vinmec.com/vie/chu-de/collagen'),(54,'Centrum A-Z','Vitamin & Khoáng chất','Đa vitamin',NULL,'Vitamin – thực phẩm chức năng','https://image.uniqlo.com/UQ/ST3/vn/imagesgoods/451433/item/vngoods_12_451433.jpg',1,'Bổ sung đầy đủ vi chất dinh dưỡng hàng ngày.','Nơi khô ráo, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','24 tháng','active','Chai','Quá mẫn với thành phần.','Có thể tương tác với thuốc khác.','Bổ sung vitamin và khoáng chất cho cơ thể.','Không dùng quá liều khuyến cáo.','Rối loạn tiêu hóa nhẹ.','Uống sau bữa ăn.','https://www.vinmec.com/vie/chu-de/vitamin'),(55,'Pharmaton','G115, Vitamin & Khoáng chất','Viên nang',NULL,'Vitamin – thực phẩm chức năng','https://cms-prod.s3-sgn09.fptcloud.com/00001098_pharmaton_vitality_60_vien_7190.jpg',1,'Tăng cường sức khỏe khi mệt mỏi, kén ăn, suy nhược.','Nơi khô ráo,ưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','24 tháng','active','Chai','Quá mẫn với thành phần.','Có thể tương tác với thuốc khác.','Bổ sung vitamin và khoáng chất cho cơ thể.','Không dùng quá liều khuyến cáo.','Rối loạn tiêu hóa nhẹ.','Uống sau bữa ăn.','https://www.vinmec.com/vie/chu-de/vitamin'),(56,'NattoEnzym 670FU','Nattokinase','670FU',NULL,'Vitamin – thực phẩm chức năng','https://cms-prod.s3-sgn09.fptcloud.com/00021634_nattoenzym_670fu_duoc_hau_giang_3x10_8698_6339.jpg',1,'Hỗ trợ tuần hoàn máu, giải tán cục máu đông, phòng đột quỵ.','Nơi khô ráo, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','24 tháng','active','Chai','Quá mẫn với thành phần.','Có thể tương tác với thuốc khác.','Bổ sung vitamin và khoáng chất cho cơ thể.','Không dùng quá liều khuyến cáo.','Rối loạn tiêu hóa nhẹ.','Uống sau bữa ăn.','https://www.vinmec.com/vie/chu-de/nattokinase'),(57,'Bocalex Multi','Vitamin B + C','Viên sủi',NULL,'Vitamin – thực phẩm chức năng','https://cms-prod.s3-sgn09.fptcloud.com/00018597_bocalex_multi_20_vien_sui_7553.jpg',1,'Viên sủi bổ sung vitamin nhanh chóng phục hồi thể lực.','Nơi khô ráo, tránh ẩm.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','24 tháng','active','Tuýp','Quá mẫn với thành phần.','Có thể tương tác với thuốc khác.','Bổ sung vitamin và khoáng chất cho cơ thể.','Không dùng quá liều khuyến cáo.','Rối loạn tiêu hóa nhẹ.','Uống sau bữa ăn.','https://www.vinmec.com/vie/chu-de/vitamin-b'),(58,'Daily-Vits','Vitamin & Khoáng chất','Đa vitamin',NULL,'Vitamin – thực phẩm chức năng','https://image.uniqlo.com/UQ/ST3/vn/imagesgoods/451433/item/vngoods_12_451433.jpg',1,'Bổ sung dinh dưỡng thiết yếu duy trì sức khỏe tổng thể.','Nơi khô ráo, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','36 tháng','active','Chai','Quá mẫn với thành phần.','Có thể tương tác với thuốc khác.','Bổ sung vitamin và khoáng chất cho cơ thể.','Không dùng quá liều khuyến cáo.','Rối loạn tiêu hóa nhẹ.','Uống sau bữa ăn.','https://www.vinmec.com/vie/chu-de/vitamin'),(59,'Apisatone','Sữa ong chúa, mật ong, vitamin','10ml',NULL,'Vitamin – thực phẩm chức năng','https://cms-prod.s3-sgn09.fptcloud.com/00000490_siro_ho_astex_90ml_4091_6339.jpg',1,'Thuốc bổ chứa sữa ong chúa giúp bồi bổ cơ thể, tăng sức đề kháng.','Nơi khô ráo, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','24 tháng','active','Hộp','Quá mẫn với thành phần.','Có thể tương tác với thuốc khác.','Bổ sung vitamin và khoáng chất cho cơ thể.','Không dùng quá liều khuyến cáo.','Rối loạn tiêu hóa nhẹ.','Uống sau bữa ăn.','https://www.vinmec.com/vie/chu-de/sua-ong-chua'),(60,'Pediakid Vitamin','22 Vitamin & Oligo-elements','125ml',NULL,'Sản phẩm trẻ em – men – bổ sung','https://cms-prod.s3-sgn09.fptcloud.com/00502127_vien_uong_blackmores_mens_performance_multi_bo_sung_vitamin_cho_nam_gioi_50_vien_8350.jpg',1,'Bổ sung vitamin và khoáng chất cho trẻ từ 6 tháng tuổi.','Nơi khô ráo, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','36 tháng','active','Chai','Quá mẫn với thành phần.','Có thể tương tác với thuốc khác.','Bổ sung vitamin và khoáng chất cho cơ thể.','Không dùng quá liều khuyến cáo.','Rối loạn tiêu hóa nhẹ.','Uống sau bữa ăn.','https://www.vinmec.com/vie/chu-de/vitamin-d3'),(61,'Fitobimbi Siro','Chiết xuất thảo dược Italy','200ml',NULL,'Sản phẩm trẻ em – men – bổ sung','https://cms-prod.s3-sgn09.fptcloud.com/00021634_nattoenzym_670fu_duoc_hau_giang_3x10_8698_6339.jpg',1,'Nhóm siro thảo dược Italy hỗ trợ bé ăn ngon, ngủ ngon.','Nơi khô ráo, dưới 30 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','36 tháng','active','Chai','Quá mẫn với thành phần.','Có thể tương tác với thuốc khác.','Bổ sung vitamin và khoáng chất cho cơ thể.','Không dùng quá liều khuyến cáo.','Rối loạn tiêu hóa nhẹ.','Uống sau bữa ăn.','https://www.vinmec.com/vie/chu-de/tre-em-va-dinh-duong'),(62,'BioAmicus Vitamin D3','Vitamin D3 nguyên chất','10ml',NULL,'Sản phẩm trẻ em – men – bổ sung','https://cms-prod.s3-sgn09.fptcloud.com/00501192_biogaia_protectis_baby_drops_5ml_1863.jpg',1,'Vitamin D3 tinh khiết không mùi không vị cho trẻ sơ sinh.','Nơi khô ráo, dưới 25 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','24 tháng','active','Chai','Quá mẫn với thành phần.','Có thể tương tác với thuốc khác.','Bổ sung vitamin và khoáng chất cho cơ thể.','Không dùng quá liều khuyến cáo.','Rối loạn tiêu hóa nhẹ.','Uống sau bữa ăn.','https://www.vinmec.com/vie/chu-de/vitamin-d3'),(63,'ChildLife Multivitamin','Vitamin & Khoáng chất dạng lỏng','237ml',NULL,'Sản phẩm trẻ em – men – bổ sung','https://cms-prod.s3-sgn09.fptcloud.com/00001037_cefixim_200mg_3x10_cuu_long_5177_6118_1633514757.jpg',1,'Cung cấp 23 loại vitamin và khoáng chất cần thiết nhất cho trẻ.','Nơi khô ráo, tránh ánh sáng.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','24 tháng','active','Chai','Quá mẫn với thành phần.','Có thể tương tác với thuốc khác.','Bổ sung vitamin và khoáng chất cho cơ thể.','Không dùng quá liều khuyến cáo.','Rối loạn tiêu hóa nhẹ.','Uống sau bữa ăn.','https://www.vinmec.com/vie/chu-de/vitamin-tre-em'),(64,'Wellbaby Syrup','14 Vitamin & Khoáng chất, Mạch nha','150ml',NULL,'Sản phẩm trẻ em – men – bổ sung','https://cms-prod.s3-sgn09.fptcloud.com/wellbaby_multi_vitamin_liquid_vitabiotics_ho_tro_suc_khoe_cho_be_150ml_7909_6372_1625907409.jpg',1,'Siro bổ sung kẽm, sắt và vitamin cho sự phát triển của bé.','Bảo quản nơi khô ráo, dưới 25 độ C.',NULL,NULL,NULL,1,'2026-02-26 09:49:48','2026-02-27 11:04:46','36 tháng','active','Chai','Quá mẫn với thành phần.','Có thể tương tác với thuốc khác.','Bổ sung vitamin và khoáng chất cho cơ thể.','Không dùng quá liều khuyến cáo.','Rối loạn tiêu hóa nhẹ.','Uống sau bữa ăn.','https://www.vinmec.com/vie/chu-de/vitamin-tre-em');
+/*!40000 ALTER TABLE `drug_products` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc bảng cho bảng `drug_shipments`
+-- Table structure for table `drug_shipments`
 --
 
+DROP TABLE IF EXISTS `drug_shipments`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `drug_shipments` (
-  `id` bigint(20) NOT NULL,
-  `shipment_code` varchar(100) NOT NULL,
-  `batch_id` bigint(20) NOT NULL,
-  `from_company_id` bigint(20) NOT NULL,
-  `to_company_id` bigint(20) NOT NULL,
-  `quantity` int(11) NOT NULL,
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `shipment_code` varchar(100) COLLATE utf8mb4_general_ci NOT NULL,
+  `batch_id` bigint NOT NULL,
+  `from_company_id` bigint NOT NULL,
+  `to_company_id` bigint NOT NULL,
+  `quantity` int NOT NULL,
   `shipment_date` timestamp NULL DEFAULT NULL,
   `expected_delivery_date` timestamp NULL DEFAULT NULL,
   `actual_delivery_date` timestamp NULL DEFAULT NULL,
-  `shipment_status` enum('PENDING','IN_TRANSIT','DELIVERED','CANCELLED') DEFAULT 'PENDING',
-  `shipping_method` enum('FULL_BATCH','PARTIAL_BATCH','ITEM_LEVEL') DEFAULT 'FULL_BATCH' COMMENT 'Phương thức giao hàng',
-  `items_json` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Danh sách item_id trong shipment này' CHECK (json_valid(`items_json`)),
-  `actual_items_count` int(11) DEFAULT 0 COMMENT 'Số lượng items thực tế',
-  `create_tx_hash` varchar(66) DEFAULT NULL,
-  `receive_tx_hash` varchar(66) DEFAULT NULL,
-  `blockchain_merkle_root` varchar(66) DEFAULT NULL COMMENT 'Merkle root của danh sách items',
-  `notes` text DEFAULT NULL,
-  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
-  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+  `shipment_status` enum('PENDING','IN_TRANSIT','DELIVERED','CANCELLED') COLLATE utf8mb4_general_ci DEFAULT 'PENDING',
+  `shipping_method` enum('FULL_BATCH','PARTIAL_BATCH','ITEM_LEVEL') COLLATE utf8mb4_general_ci DEFAULT 'FULL_BATCH' COMMENT 'Phương thức giao hàng',
+  `items_json` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin COMMENT 'Danh sách item_id trong shipment này',
+  `actual_items_count` int DEFAULT '0' COMMENT 'Số lượng items thực tế',
+  `create_tx_hash` varchar(66) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `receive_tx_hash` varchar(66) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `blockchain_merkle_root` varchar(66) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT 'Merkle root của danh sách items',
+  `notes` text COLLATE utf8mb4_general_ci,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `shipment_code` (`shipment_code`),
+  UNIQUE KEY `idx_shipment_code` (`shipment_code`),
+  KEY `idx_drug_shipments_batch` (`batch_id`),
+  KEY `idx_drug_shipments_from` (`from_company_id`),
+  KEY `idx_drug_shipments_to` (`to_company_id`),
+  KEY `idx_drug_shipments_status` (`shipment_status`),
+  KEY `idx_drug_shipments_batch_id` (`batch_id`),
+  KEY `idx_drug_shipments_from_company` (`from_company_id`),
+  KEY `idx_drug_shipments_to_company` (`to_company_id`),
+  KEY `idx_drug_shipments_shipment_date` (`shipment_date`),
+  KEY `idx_drug_shipments_shipment_code` (`shipment_code`),
+  KEY `idx_batch_id` (`batch_id`),
+  KEY `idx_from_company` (`from_company_id`),
+  KEY `idx_to_company` (`to_company_id`),
+  KEY `idx_shipment_status` (`shipment_status`),
+  KEY `idx_composite_status_date` (`shipment_status`,`shipment_date`),
+  KEY `idx_batch_id_shipments` (`batch_id`),
+  KEY `idx_shipping_method` (`shipping_method`),
+  KEY `idx_actual_items_count` (`actual_items_count`),
+  CONSTRAINT `FK62vjipmxnoneo3nstux5d7492` FOREIGN KEY (`from_company_id`) REFERENCES `pharma_companies` (`id`),
+  CONSTRAINT `fk_drug_shipments_batch` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`) ON UPDATE CASCADE,
+  CONSTRAINT `FKg2b8lwl3cf30c3yumc4bm2jo0` FOREIGN KEY (`to_company_id`) REFERENCES `pharma_companies` (`id`),
+  CONSTRAINT `FKijrigymbgnkf344fc6dv25swr` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`),
+  CONSTRAINT `drug_shipments_chk_1` CHECK (json_valid(`items_json`))
+) ENGINE=InnoDB AUTO_INCREMENT=21 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `drug_shipments`
+-- Dumping data for table `drug_shipments`
 --
 
-INSERT INTO `drug_shipments` (`id`, `shipment_code`, `batch_id`, `from_company_id`, `to_company_id`, `quantity`, `shipment_date`, `expected_delivery_date`, `actual_delivery_date`, `shipment_status`, `shipping_method`, `items_json`, `actual_items_count`, `create_tx_hash`, `receive_tx_hash`, `blockchain_merkle_root`, `notes`, `created_at`, `updated_at`) VALUES
-(62, 'SHIP-17721161169867612', 96, 1, 3, 5, '2026-02-26 14:28:37', '2026-03-01 14:28:37', '2026-02-26 14:28:45', 'DELIVERED', 'FULL_BATCH', NULL, 0, '0xf8460752b6755dab28b2ca36a9dde34c8ccc9b6cb41674e7609b5bc5d4e89f84', '0xa12f4f17ffeb10fd96254ab7582e37e5899d2fdaf024ceaaf43adb65b0d2613d', NULL, '{\"block_number\":\"8\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"17721161169867612\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Shipment to CPC1 Hà Nội\",\"is_synced\":true}', '2026-02-26 14:28:37', '2026-02-26 14:28:45'),
-(63, 'SHIP-1772116135807', 96, 3, 5, 5, '2026-02-26 14:28:55', '2026-02-28 14:28:55', '2026-02-26 14:29:03', 'DELIVERED', 'FULL_BATCH', NULL, 0, '0xce726f3d6f397e9c1512d406e2c2d72ae340e970ca5b3eb1e99f748628bd67ab', '0xffda611663d742abc71c3f7265c821edf52e83bad90a5b07df9215adfb1b9bfd', NULL, '{\"block_number\":\"10\",\"to_address\":\"0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65\",\"original_shipment_id\":\"1772116135807\",\"from_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"tracking_info\":\"SH135001BFZ\",\"is_synced\":true, \"shipment_info\": {\"driver_name\": \"\", \"pharmacy_address\": \"Phú Diễn, Hà Nội\", \"user_notes\": \"\", \"pharmacy_name\": \"Hiệu thuốc Long Châu\", \"transport_method\": \"Xe tải\", \"tracking_number\": \"SH135001BFZ\", \"driver_phone\": \"\"}}', '2026-02-26 14:28:55', '2026-02-26 14:29:03'),
-(64, 'SHIP-17730177493633103', 97, 1, 3, 5, '2026-03-09 00:55:49', '2026-03-12 00:55:49', NULL, 'PENDING', 'FULL_BATCH', NULL, 0, '0xbcd13fecbc2ba15820db1263fc89c88cc18224130f5a848c70e2a5e62730215f', NULL, NULL, '{\"block_number\":\"2\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"17730177493633103\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Shipment to CPC1 Hà Nội\",\"is_synced\":true}', '2026-03-09 00:55:49', '2026-03-09 00:55:49'),
-(65, 'SHIP-17744258165544474', 98, 1, 3, 5, '2026-03-25 08:03:36', '2026-03-28 08:03:36', '2026-03-25 08:03:50', 'DELIVERED', 'FULL_BATCH', NULL, 0, '0xb7921efc508a368910d0a58e8a2034992ad70df1a928f9926b590139b4983184', '0x82cb0babaf5910aeb9a6d5d4380a00755b37def1a24dbff9e0b3d1fc51cf62e6', NULL, '{\"block_number\":\"3\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"17744258165544474\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Shipment to CPC1 Hà Nội\",\"is_synced\":true}', '2026-03-25 08:03:36', '2026-03-25 08:03:50'),
-(66, 'SHIP-1774425856897', 98, 3, 5, 5, '2026-03-25 08:04:16', '2026-03-27 08:04:16', '2026-03-25 08:04:33', 'DELIVERED', 'FULL_BATCH', NULL, 0, '0xb67e75873e6bb280e16f137a2d837727289ec86d914e767b32a9e2f0a4604b6b', '0xf55077780de5b185dde52166ea5953c42c20c0e05da78f77a146e528811f687f', NULL, '{\"block_number\":\"5\",\"to_address\":\"0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65\",\"original_shipment_id\":\"1774425856897\",\"from_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"tracking_info\":\"SH8532363W6\",\"is_synced\":true, \"shipment_info\": {\"driver_name\": \"\", \"pharmacy_address\": \"Phú Diễn, Hà Nội\", \"user_notes\": \"\", \"pharmacy_name\": \"Hiệu thuốc Long Châu\", \"transport_method\": \"Xe tải\", \"tracking_number\": \"SH8532363W6\", \"driver_phone\": \"\"}}', '2026-03-25 08:04:16', '2026-03-25 08:04:33');
-
--- --------------------------------------------------------
+LOCK TABLES `drug_shipments` WRITE;
+/*!40000 ALTER TABLE `drug_shipments` DISABLE KEYS */;
+INSERT INTO `drug_shipments` VALUES (1,'SHIP-1',1,1,3,13,'2026-04-29 11:00:37','2026-05-02 11:00:37','2026-04-29 11:06:05','DELIVERED','FULL_BATCH',NULL,0,'0x88f36028d4f29fa97b9f66400656786d3a29573b8318a153821af9742bbe23c3',NULL,NULL,'{\"block_number\":\"10753339\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"1\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Test Tạo lô hàng txhash\",\"is_synced\":true}','2026-04-29 11:00:37','2026-04-29 11:06:05'),(2,'SHIP-1777566404626',1,3,6,13,'2026-04-30 23:26:49','2026-05-02 23:26:49',NULL,'IN_TRANSIT','FULL_BATCH',NULL,0,'0xf80087f74e06aa22e9a94ba401a005c2062fd9be9724713d597c8f465747501c',NULL,NULL,'{\"block_number\":\"10763238\",\"to_address\":\"0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc\",\"original_shipment_id\":\"1777566404626\",\"from_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"tracking_info\":\"SH401125TWS\",\"is_synced\":true, \"shipment_info\": {\"driver_name\": \"\", \"pharmacy_address\": \"789 Đường PQR, Quận Bình Thạnh, TP.HCM\", \"user_notes\": \"abc\", \"pharmacy_name\": \"Pharmacity Bình Thạnh\", \"transport_method\": \"Xe tải\", \"tracking_number\": \"SH401125TWS\", \"driver_phone\": \"\"}}','2026-04-30 23:26:49','2026-04-30 23:26:49'),(3,'SHIP-2',3,1,3,2,'2026-05-01 23:27:14','2026-05-04 23:27:14','2026-05-01 23:28:08','DELIVERED','FULL_BATCH',NULL,0,'0x02de9e3199d1c4d8e02fb5d32851998174e470c7a1637c9ed5c8c6adae8284ef',NULL,NULL,'{\"block_number\":\"10769738\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"2\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Xuất 2 hộp thuốc\",\"is_synced\":true}','2026-05-01 23:27:14','2026-05-01 23:28:08'),(4,'SHIP-3',4,1,3,23,'2026-05-01 23:41:37','2026-05-04 23:41:37','2026-05-01 23:41:53','DELIVERED','FULL_BATCH',NULL,0,'0x77ce7f2298c99133630cb0a9e5d5afb92253152072b38654ab5eb2c9e5f1c7d6',NULL,NULL,'{\"block_number\":\"10769804\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"3\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Test xuất hang\",\"is_synced\":true}','2026-05-01 23:41:37','2026-05-01 23:41:53'),(5,'SHIP-4',5,1,3,25,'2026-05-02 00:05:38','2026-05-05 00:05:38','2026-05-02 00:05:45','DELIVERED','FULL_BATCH',NULL,0,'0x1025831fa770c601dbfcb00730a77cfe957cd4b67b078e73bc23eb2e875236dc',NULL,NULL,'{\"block_number\":\"10769913\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"4\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Test xuất hàng\",\"is_synced\":true}','2026-05-02 00:05:38','2026-05-02 00:05:45'),(6,'SHIP-5',2,1,3,20,'2026-05-02 00:11:38','2026-05-05 00:11:38','2026-05-02 00:12:16','DELIVERED','FULL_BATCH',NULL,0,'0x57841173520925f617f26bd58388d2af9e92cd0e30405e9a18bb978720e5d43b',NULL,NULL,'{\"block_number\":\"10769941\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"5\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Test xuất hàng\",\"is_synced\":true}','2026-05-02 00:11:38','2026-05-02 00:12:16'),(7,'SHIP-6',7,1,3,14,'2026-05-02 22:14:25','2026-05-05 22:14:25','2026-05-02 22:15:15','DELIVERED','FULL_BATCH',NULL,0,'0x35da3db69ff7b50923c6c8076a1579686b1032cf3cc532f57ebec5751dfa5d59',NULL,NULL,'{\"block_number\":\"10775961\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"6\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Test xuất hàng 14 hộp\",\"is_synced\":true}','2026-05-02 22:14:25','2026-05-02 22:15:15'),(8,'SHIP-7',8,1,3,23,'2026-05-02 22:23:38','2026-05-05 22:23:38','2026-05-02 22:32:03','DELIVERED','FULL_BATCH',NULL,0,'0xc6418d334e122956646836b79038e147cdcecf88772bb5985f823db80fb7cad1','0x1a641878a2e23a24c3ac613846e9fa1d319ccd6fc769e2e5543dd642eb56b96f',NULL,'{\"block_number\":\"10776005\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"7\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Test tạo shipment mới\",\"is_synced\":true}','2026-05-02 22:23:38','2026-05-02 22:32:03'),(9,'SHIP-8',29,1,3,5,'2026-05-02 22:37:01','2026-05-05 22:37:01','2026-05-02 22:37:50','DELIVERED','FULL_BATCH',NULL,0,'0x11a0c7a3801776632a9f43e171cef058302b81c3714945d077b1484f6d9127a6',NULL,NULL,'{\"block_number\":\"10776067\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"8\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Vận chuyển lô BATCH-1777736202-1 tới NPP\",\"is_synced\":true}','2026-05-02 22:37:01','2026-05-02 22:37:51'),(10,'SHIP-9',30,1,3,5,'2026-05-02 22:37:38','2026-05-05 22:37:38',NULL,'CANCELLED','FULL_BATCH',NULL,0,'0x6ccbdc611b9e956cf34690737b3c480712c2b0d70320502d9867fefbf22d1d44',NULL,NULL,'{\"block_number\":\"10776069\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"9\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Vận chuyển lô BATCH-1777736223-2 tới NPP\",\"is_synced\":true}','2026-05-02 22:37:38','2026-05-02 22:42:47'),(11,'SHIP-10',31,1,3,5,'2026-05-02 22:38:14','2026-05-05 22:38:14',NULL,'CANCELLED','FULL_BATCH',NULL,0,'0x3ceb9f391c140dbb22aedf53d74c95bdd04fa0bb573f75c1bf1fc178e9a139d7',NULL,NULL,'{\"block_number\":\"10776071\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"10\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Vận chuyển lô BATCH-1777736259-3 tới NPP\",\"is_synced\":true}','2026-05-02 22:38:14','2026-05-02 22:42:52'),(12,'SHIP-11',32,1,3,5,'2026-05-02 22:38:37','2026-05-05 22:38:37',NULL,'CANCELLED','FULL_BATCH',NULL,0,'0xa4d7d33a1665393f70cdade132ff3671fa145270822efe06aeeb3979b536d08e',NULL,NULL,'{\"block_number\":\"10776073\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"11\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Vận chuyển lô BATCH-1777736296-4 tới NPP\",\"is_synced\":true}','2026-05-02 22:38:37','2026-05-02 22:42:59'),(13,'SHIP-12',33,1,3,5,'2026-05-02 22:39:14','2026-05-05 22:39:14',NULL,'PENDING','FULL_BATCH',NULL,0,'0x475fd2afbbd0f8be33051220d3f425ad8b91e8e0c4bb42020e3330dbbf684bca',NULL,NULL,'{\"block_number\":\"10776075\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"12\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Vận chuyển lô BATCH-1777736319-5 tới NPP\",\"is_synced\":true}','2026-05-02 22:39:14','2026-05-02 22:39:14'),(14,'SHIP-13',34,1,3,5,'2026-05-02 22:39:37','2026-05-05 22:39:37',NULL,'PENDING','FULL_BATCH',NULL,0,'0xc4d577b20b7625bd496baceb5d44998c5213bdd70cecc14325dea437526ee53e',NULL,NULL,'{\"block_number\":\"10776077\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"13\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Vận chuyển lô BATCH-1777736355-6 tới NPP\",\"is_synced\":true}','2026-05-02 22:39:37','2026-05-02 22:39:37'),(15,'SHIP-14',35,1,3,5,'2026-05-02 22:40:01','2026-05-05 22:40:01',NULL,'PENDING','FULL_BATCH',NULL,0,'0x0be007dafbed5f0da3c98ca704ec46e814a960a95d6dfc32b6a31528daaa8d7b',NULL,NULL,'{\"block_number\":\"10776079\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"14\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Vận chuyển lô BATCH-1777736379-7 tới NPP\",\"is_synced\":true}','2026-05-02 22:40:01','2026-05-02 22:40:01'),(16,'SHIP-15',36,1,3,5,'2026-05-02 22:40:25','2026-05-05 22:40:25',NULL,'PENDING','FULL_BATCH',NULL,0,'0x19e16b35883ba1e972828564dc70e3998305f5b87450be6ee112fd847b2cd7f7',NULL,NULL,'{\"block_number\":\"10776081\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"15\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Vận chuyển lô BATCH-1777736403-8 tới NPP\",\"is_synced\":true}','2026-05-02 22:40:25','2026-05-02 22:40:25'),(17,'SHIP-16',37,1,3,5,'2026-05-02 22:40:50','2026-05-05 22:40:50',NULL,'PENDING','FULL_BATCH',NULL,0,'0x804f1af94b52437927e644a89967746e7be1ffd7cbef7a4b97862ab4aef939a0',NULL,NULL,'{\"block_number\":\"10776083\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"16\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Vận chuyển lô BATCH-1777736427-9 tới NPP\",\"is_synced\":true}','2026-05-02 22:40:50','2026-05-02 22:40:50'),(18,'SHIP-17777364621279237',38,1,3,5,'2026-05-02 22:41:03','2026-05-05 22:41:03',NULL,'PENDING','FULL_BATCH',NULL,0,'PENDING_1777736462722',NULL,NULL,'{\"block_number\":\"0\",\"to_address\":\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\",\"original_shipment_id\":\"17777364621279237\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Vận chuyển lô BATCH-1777736452-10 tới NPP\",\"is_synced\":true}','2026-05-02 22:41:03','2026-05-02 22:41:03'),(19,'SHIP-17',40,1,4,100,'2026-05-23 14:27:25','2026-05-26 14:27:25','2026-05-23 14:33:00','DELIVERED','FULL_BATCH',NULL,0,'0x4f918f86852823ae34966e40dd14177970cbb19fb737426499f20535f0519b97',NULL,NULL,'{\"block_number\":\"10903220\",\"to_address\":\"0x90F79bf6EB2c4f870365E785982E1f101E93b906\",\"original_shipment_id\":\"17\",\"from_address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"tracking_info\":\"Test Ghi chú\",\"is_synced\":true}','2026-05-23 14:27:25','2026-05-23 14:33:00'),(20,'SHIP-1779521664089',40,4,6,100,'2026-05-23 14:34:37','2026-05-25 14:34:37','2026-05-23 14:37:20','DELIVERED','FULL_BATCH',NULL,0,'0x4a676380fc32691727fb03292086093953518cc6d096460a7898bda518e17b1f',NULL,NULL,'{\"block_number\":\"10903256\",\"to_address\":\"0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc\",\"original_shipment_id\":\"1779521664089\",\"from_address\":\"0x90F79bf6EB2c4f870365E785982E1f101E93b906\",\"tracking_info\":\"SH6603109BI\",\"is_synced\":true, \"shipment_info\": {\"driver_name\": \"\", \"pharmacy_address\": \"789 Đường PQR, Quận Bình Thạnh, TP.HCM\", \"user_notes\": \"Test\", \"pharmacy_name\": \"Pharmacity Bình Thạnh\", \"transport_method\": \"Xe tải\", \"tracking_number\": \"SH6603109BI\", \"driver_phone\": \"\"}}','2026-05-23 14:34:37','2026-05-23 14:37:20');
+/*!40000 ALTER TABLE `drug_shipments` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc bảng cho bảng `drug_verification_records`
+-- Table structure for table `drug_verification_records`
 --
 
+DROP TABLE IF EXISTS `drug_verification_records`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `drug_verification_records` (
-  `id` bigint(20) NOT NULL,
-  `batch_id` bigint(20) NOT NULL,
-  `verified_by_company_id` bigint(20) DEFAULT NULL,
-  `verification_type` enum('QR_SCAN','MANUAL_CHECK','COUNTER_VERIFICATION','CONSUMER_SCAN') NOT NULL,
-  `verification_date` timestamp NOT NULL DEFAULT current_timestamp(),
-  `verification_location` varchar(255) DEFAULT NULL,
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `batch_id` bigint NOT NULL,
+  `verified_by_company_id` bigint DEFAULT NULL,
+  `verification_type` enum('QR_SCAN','MANUAL_CHECK','COUNTER_VERIFICATION','CONSUMER_SCAN') COLLATE utf8mb4_general_ci NOT NULL,
+  `verification_date` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `verification_location` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
   `is_authentic` tinyint(1) NOT NULL,
-  `verification_result` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`verification_result`)),
-  `scanner_device` varchar(100) DEFAULT NULL,
-  `user_agent` text DEFAULT NULL,
-  `ip_address` varchar(45) DEFAULT NULL,
-  `blockchain_verified` tinyint(1) DEFAULT 0,
-  `blockchain_query_time_ms` int(11) DEFAULT NULL,
-  `notes` text DEFAULT NULL,
-  `created_at` timestamp NOT NULL DEFAULT current_timestamp()
+  `verification_result` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
+  `scanner_device` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `user_agent` text COLLATE utf8mb4_general_ci,
+  `ip_address` varchar(45) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `blockchain_verified` tinyint(1) DEFAULT '0',
+  `blockchain_query_time_ms` int DEFAULT NULL,
+  `notes` text COLLATE utf8mb4_general_ci,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_verification_records_batch` (`batch_id`),
+  KEY `idx_verification_records_company` (`verified_by_company_id`),
+  KEY `idx_verification_records_date` (`verification_date`),
+  KEY `idx_verification_records_type` (`verification_type`),
+  KEY `idx_verification_records_authentic` (`is_authentic`),
+  KEY `idx_verification_records_composite` (`batch_id`,`verification_date`,`is_authentic`),
+  KEY `idx_batch_id` (`batch_id`),
+  KEY `idx_verification_date` (`verification_date`),
+  KEY `idx_is_authentic` (`is_authentic`),
+  KEY `idx_batch_id_dvr` (`batch_id`),
+  CONSTRAINT `drug_verification_records_ibfk_1` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`),
+  CONSTRAINT `drug_verification_records_ibfk_2` FOREIGN KEY (`verified_by_company_id`) REFERENCES `pharma_companies` (`id`),
+  CONSTRAINT `drug_verification_records_chk_1` CHECK (json_valid(`verification_result`))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc bảng cho bảng `inventory_movements`
+-- Dumping data for table `drug_verification_records`
 --
 
+LOCK TABLES `drug_verification_records` WRITE;
+/*!40000 ALTER TABLE `drug_verification_records` DISABLE KEYS */;
+/*!40000 ALTER TABLE `drug_verification_records` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `inventory_movements`
+--
+
+DROP TABLE IF EXISTS `inventory_movements`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `inventory_movements` (
-  `id` bigint(20) NOT NULL,
-  `inventory_type` enum('DISTRIBUTOR','PHARMACY') NOT NULL,
-  `inventory_id` bigint(20) NOT NULL COMMENT 'ID của distributor_inventory hoặc pharmacy_inventory',
-  `movement_type` enum('RECEIVE','SHIP_OUT','SALE','RETURN','ADJUSTMENT','DAMAGE','EXPIRED','RECALL','TRANSFER') NOT NULL,
-  `quantity_before` int(11) NOT NULL,
-  `quantity_change` int(11) NOT NULL COMMENT 'Số dương = tăng, số âm = giảm',
-  `quantity_after` int(11) NOT NULL,
-  `related_shipment_id` bigint(20) DEFAULT NULL,
-  `related_sale_id` bigint(20) DEFAULT NULL COMMENT 'FK to sales/orders (if exists)',
-  `performed_by` varchar(36) DEFAULT NULL COMMENT 'User thực hiện',
-  `reason` varchar(500) DEFAULT NULL,
-  `notes` text DEFAULT NULL,
-  `movement_date` timestamp NOT NULL DEFAULT current_timestamp(),
-  `created_at` timestamp NOT NULL DEFAULT current_timestamp()
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Lịch sử biến động kho (nhập/xuất/bán/điều chỉnh)';
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `inventory_type` enum('DISTRIBUTOR','PHARMACY') COLLATE utf8mb4_general_ci NOT NULL,
+  `inventory_id` bigint NOT NULL COMMENT 'ID của distributor_inventory hoặc pharmacy_inventory',
+  `movement_type` enum('RECEIVE','SHIP_OUT','SALE','RETURN','ADJUSTMENT','DAMAGE','EXPIRED','RECALL','TRANSFER') COLLATE utf8mb4_general_ci NOT NULL,
+  `quantity_before` int NOT NULL,
+  `quantity_change` int NOT NULL COMMENT 'Số dương = tăng, số âm = giảm',
+  `quantity_after` int NOT NULL,
+  `related_shipment_id` bigint DEFAULT NULL,
+  `related_sale_id` bigint DEFAULT NULL COMMENT 'FK to sales/orders (if exists)',
+  `performed_by` varchar(36) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT 'User thực hiện',
+  `reason` varchar(500) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `notes` text COLLATE utf8mb4_general_ci,
+  `movement_date` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_inventory_type_id` (`inventory_type`,`inventory_id`),
+  KEY `idx_movement_type` (`movement_type`),
+  KEY `idx_movement_date` (`movement_date`),
+  KEY `idx_related_shipment` (`related_shipment_id`),
+  CONSTRAINT `fk_inv_mov_shipment` FOREIGN KEY (`related_shipment_id`) REFERENCES `drug_shipments` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB AUTO_INCREMENT=12 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Lịch sử biến động kho (nhập/xuất/bán/điều chỉnh)';
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `inventory_movements`
+-- Dumping data for table `inventory_movements`
 --
 
-INSERT INTO `inventory_movements` (`id`, `inventory_type`, `inventory_id`, `movement_type`, `quantity_before`, `quantity_change`, `quantity_after`, `related_shipment_id`, `related_sale_id`, `performed_by`, `reason`, `notes`, `movement_date`, `created_at`) VALUES
-(1, 'DISTRIBUTOR', 1, 'SHIP_OUT', 500, -500, 0, NULL, NULL, NULL, 'Auto-logged by trigger', NULL, '2025-09-30 09:38:30', '2025-09-30 09:38:30'),
-(2, 'DISTRIBUTOR', 1, 'RECEIVE', 0, 500, 500, NULL, NULL, NULL, 'Auto-logged by trigger', NULL, '2025-09-30 10:05:02', '2025-09-30 10:05:02'),
-(3, 'DISTRIBUTOR', 1, 'SHIP_OUT', 500, -499, 1, NULL, NULL, NULL, 'Auto-logged by trigger', NULL, '2025-09-30 10:07:59', '2025-09-30 10:07:59');
-
--- --------------------------------------------------------
+LOCK TABLES `inventory_movements` WRITE;
+/*!40000 ALTER TABLE `inventory_movements` DISABLE KEYS */;
+INSERT INTO `inventory_movements` VALUES (1,'DISTRIBUTOR',1,'SHIP_OUT',500,-500,0,NULL,NULL,NULL,'Auto-logged by trigger',NULL,'2025-09-30 09:38:30','2025-09-30 09:38:30'),(2,'DISTRIBUTOR',1,'RECEIVE',0,500,500,NULL,NULL,NULL,'Auto-logged by trigger',NULL,'2025-09-30 10:05:02','2025-09-30 10:05:02'),(3,'DISTRIBUTOR',1,'SHIP_OUT',500,-499,1,NULL,NULL,NULL,'Auto-logged by trigger',NULL,'2025-09-30 10:07:59','2025-09-30 10:07:59'),(4,'PHARMACY',10,'RECEIVE',1,1,2,NULL,NULL,NULL,'Auto-logged by trigger',NULL,'2026-04-27 05:57:10','2026-04-27 05:57:10'),(5,'PHARMACY',10,'RECEIVE',2,1,3,NULL,NULL,NULL,'Auto-logged by trigger',NULL,'2026-04-27 05:57:11','2026-04-27 05:57:11'),(6,'PHARMACY',10,'RECEIVE',3,1,4,NULL,NULL,NULL,'Auto-logged by trigger',NULL,'2026-04-27 05:57:11','2026-04-27 05:57:11'),(7,'PHARMACY',10,'RECEIVE',4,1,5,NULL,NULL,NULL,'Auto-logged by trigger',NULL,'2026-04-27 05:57:11','2026-04-27 05:57:11'),(8,'PHARMACY',10,'RECEIVE',5,1,6,NULL,NULL,NULL,'Auto-logged by trigger',NULL,'2026-04-27 05:57:12','2026-04-27 05:57:12'),(9,'PHARMACY',10,'RECEIVE',6,1,7,NULL,NULL,NULL,'Auto-logged by trigger',NULL,'2026-04-27 05:57:12','2026-04-27 05:57:12'),(10,'DISTRIBUTOR',12,'RECEIVE',13,13,26,NULL,NULL,NULL,'Auto-logged by trigger',NULL,'2026-04-29 04:06:05','2026-04-29 04:06:05'),(11,'DISTRIBUTOR',18,'RECEIVE',23,23,46,NULL,NULL,NULL,'Auto-logged by trigger',NULL,'2026-05-02 15:32:03','2026-05-02 15:32:03');
+/*!40000 ALTER TABLE `inventory_movements` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc bảng cho bảng `manufacturer_users`
+-- Table structure for table `manufacturer_users`
 --
 
+DROP TABLE IF EXISTS `manufacturer_users`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `manufacturer_users` (
-  `id` varchar(36) NOT NULL,
-  `company_address` varchar(500) DEFAULT NULL,
-  `company_name` varchar(255) DEFAULT NULL,
+  `id` varchar(36) COLLATE utf8mb4_general_ci NOT NULL,
+  `company_address` varchar(500) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `company_name` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
   `created_at` datetime(6) NOT NULL,
-  `email` varchar(255) NOT NULL,
+  `email` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
   `is_verified` bit(1) NOT NULL,
   `last_login_at` datetime(6) DEFAULT NULL,
-  `license_number` varchar(50) DEFAULT NULL,
-  `name` varchar(255) DEFAULT NULL,
-  `password_hash` varchar(255) NOT NULL,
-  `role` enum('ADMIN','DISTRIBUTOR','MANUFACTURER','PHARMACY','USER') NOT NULL,
+  `license_number` varchar(50) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `name` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `password_hash` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `role` enum('ADMIN','DISTRIBUTOR','MANUFACTURER','PHARMACY','USER') COLLATE utf8mb4_general_ci NOT NULL,
   `updated_at` datetime(6) DEFAULT NULL,
-  `wallet_address` varchar(42) DEFAULT NULL
+  `wallet_address` varchar(42) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UK95h07q846p7dv5v8l5epve0vs` (`email`),
+  UNIQUE KEY `idx_email` (`email`),
+  UNIQUE KEY `idx_email_manu` (`email`),
+  UNIQUE KEY `unique_manufacturer_wallet` (`wallet_address`),
+  KEY `idx_manufacturer_user_email` (`email`),
+  KEY `idx_manufacturer_user_wallet_address` (`wallet_address`),
+  KEY `idx_manufacturer_user_role` (`role`),
+  KEY `idx_wallet_address` (`wallet_address`),
+  KEY `idx_wallet_address_manu` (`wallet_address`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `manufacturer_users`
+-- Dumping data for table `manufacturer_users`
 --
 
-INSERT INTO `manufacturer_users` (`id`, `company_address`, `company_name`, `created_at`, `email`, `is_verified`, `last_login_at`, `license_number`, `name`, `password_hash`, `role`, `updated_at`, `wallet_address`) VALUES
-('manu-001-uuid', '123 Đường ABC, Quận 1, TP.HCM', 'Công ty Cổ phần Dược Hậu Giang\r\n', '2025-09-29 19:00:12.000000', 'manufacturer@demo.com', b'1', '2026-03-25 14:43:46.000000', NULL, 'Lê Văn Hậu Giang', '$2a$10$3alAj9C1NKgRuow/bkcqpOLNtuEQq9RoYnFArbg3UuuQqNAROw32a', 'MANUFACTURER', '2026-03-25 14:43:46.000000', '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266'),
-('manu-002-uuid', '456 Đường DEF, Hà Nội', 'Traphaco JSC', '2025-09-29 19:00:12.000000', 'traphaco@demo.com', b'1', NULL, NULL, 'Phạm Thị Traphaco', '$2a$10$tyE/oab7/nH7Al93GIpA3eGPL1xmxn0xTNq5RFKCn7Wbv2Q1zSayW', 'MANUFACTURER', NULL, '0x70997970C51812dc3A010C7d01b50e0d17dc79C8');
-
--- --------------------------------------------------------
+LOCK TABLES `manufacturer_users` WRITE;
+/*!40000 ALTER TABLE `manufacturer_users` DISABLE KEYS */;
+INSERT INTO `manufacturer_users` VALUES ('manu-001-uuid','123 Đường ABC, Quận 1, TP.HCM','Công ty Cổ phần Dược Hậu Giang\r\n','2025-09-29 19:00:12.000000','manufacturer@demo.com',_binary '','2026-05-26 21:29:48.097810',NULL,'Lê Văn Hậu Giang','$2a$10$zCd/f06gk5Q.jU14BVgVE.q6Ltz69DsrKGS2HHPtkCf3Losb0Z3PW','MANUFACTURER','2026-05-26 21:29:48.108565','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266'),('manu-002-uuid','456 Đường DEF, Hà Nội','Traphaco JSC','2025-09-29 19:00:12.000000','traphaco@demo.com',_binary '',NULL,NULL,'Phạm Thị Traphaco','$2a$10$tyE/oab7/nH7Al93GIpA3eGPL1xmxn0xTNq5RFKCn7Wbv2Q1zSayW','MANUFACTURER',NULL,'0x70997970C51812dc3A010C7d01b50e0d17dc79C8');
+/*!40000 ALTER TABLE `manufacturer_users` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc bảng cho bảng `medical_specialties`
+-- Table structure for table `medical_specialties`
 --
 
+DROP TABLE IF EXISTS `medical_specialties`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `medical_specialties` (
-  `id` int(11) NOT NULL,
+  `id` int NOT NULL AUTO_INCREMENT,
   `created_at` datetime(6) NOT NULL,
-  `description` text DEFAULT NULL,
-  `name` varchar(100) NOT NULL,
-  `parent_specialty_id` int(11) DEFAULT NULL
+  `description` text COLLATE utf8mb4_general_ci,
+  `name` varchar(100) COLLATE utf8mb4_general_ci NOT NULL,
+  `parent_specialty_id` int DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UKlhtvpg16rimsy4mkpmj5qhx2x` (`name`),
+  KEY `FKopvnsmewctm3u4tb8y86mnwss` (`parent_specialty_id`),
+  CONSTRAINT `FKopvnsmewctm3u4tb8y86mnwss` FOREIGN KEY (`parent_specialty_id`) REFERENCES `medical_specialties` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
-
---
--- Cấu trúc bảng cho bảng `medications`
---
-
-CREATE TABLE `medications` (
-  `id` int(11) NOT NULL,
-  `brand_names` text DEFAULT NULL,
-  `common_dosages` text DEFAULT NULL,
-  `contraindications` text DEFAULT NULL,
-  `created_at` datetime(6) NOT NULL,
-  `dosage_forms` text DEFAULT NULL,
-  `drug_class` varchar(100) DEFAULT NULL,
-  `generic_name` varchar(200) DEFAULT NULL,
-  `interactions` text DEFAULT NULL,
-  `is_controlled_substance` bit(1) NOT NULL,
-  `name` varchar(200) NOT NULL,
-  `pregnancy_category` enum('A','B','C','D','X','unknown') DEFAULT NULL,
-  `requires_prescription` bit(1) NOT NULL,
-  `side_effects` text DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc bảng cho bảng `medication_reminders`
+-- Dumping data for table `medical_specialties`
 --
 
+LOCK TABLES `medical_specialties` WRITE;
+/*!40000 ALTER TABLE `medical_specialties` DISABLE KEYS */;
+/*!40000 ALTER TABLE `medical_specialties` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `medication_reminders`
+--
+
+DROP TABLE IF EXISTS `medication_reminders`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `medication_reminders` (
-  `id` bigint(20) NOT NULL,
+  `id` bigint NOT NULL AUTO_INCREMENT,
   `created_at` datetime(6) NOT NULL,
-  `notes` text DEFAULT NULL,
+  `notes` text COLLATE utf8mb4_general_ci,
   `notification_sent` bit(1) DEFAULT NULL,
   `notification_sent_at` datetime(6) DEFAULT NULL,
-  `record_id` bigint(20) NOT NULL,
-  `response_time_minutes` int(11) DEFAULT NULL,
+  `record_id` bigint NOT NULL,
+  `response_time_minutes` int DEFAULT NULL,
   `scheduled_date` date NOT NULL,
   `scheduled_time` time(6) NOT NULL,
-  `skip_reason` varchar(255) DEFAULT NULL,
-  `status` enum('MISSED','NOTIFIED','PENDING','SKIPPED','TAKEN') NOT NULL,
+  `skip_reason` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `status` enum('MISSED','NOTIFIED','PENDING','SKIPPED','TAKEN') COLLATE utf8mb4_general_ci NOT NULL,
   `taken_at` datetime(6) DEFAULT NULL,
-  `updated_at` datetime(6) DEFAULT NULL
+  `updated_at` datetime(6) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `FK75mil2vo3q2yxwo8jpnya2wjy` (`record_id`),
+  CONSTRAINT `FK75mil2vo3q2yxwo8jpnya2wjy` FOREIGN KEY (`record_id`) REFERENCES `user_medication_records` (`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=443 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `medication_reminders`
+--
+
+LOCK TABLES `medication_reminders` WRITE;
+/*!40000 ALTER TABLE `medication_reminders` DISABLE KEYS */;
+INSERT INTO `medication_reminders` VALUES (412,'2026-02-27 15:36:25.000000','Đã uống qua thông báo',_binary '\0',NULL,28,1,'2026-02-27','16:37:00.000000',NULL,'TAKEN','2026-02-27 15:38:06.000000','2026-02-27 15:38:06.000000'),(413,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-02-27','21:00:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(414,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-02-28','09:00:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(415,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-02-28','16:37:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(416,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-02-28','21:00:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(417,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-01','09:00:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(418,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-01','16:37:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(419,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-01','21:00:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(420,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-02','09:00:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(421,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-02','16:37:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(422,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-02','21:00:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(423,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-03','09:00:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(424,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-03','16:37:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(425,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-03','21:00:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(426,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-04','09:00:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(427,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-04','16:37:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(428,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-04','21:00:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(429,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-05','09:00:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(430,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-05','16:37:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(431,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-05','21:00:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(432,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-06','09:00:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(433,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-06','16:37:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(434,'2026-02-27 15:36:25.000000',NULL,_binary '\0',NULL,28,NULL,'2026-03-06','21:00:00.000000',NULL,'PENDING',NULL,'2026-02-27 15:36:25.000000'),(435,'2026-03-25 14:52:32.000000',NULL,_binary '\0',NULL,29,NULL,'2026-03-25','13:00:00.000000',NULL,'PENDING',NULL,'2026-03-25 14:52:32.000000'),(436,'2026-03-25 14:52:32.000000',NULL,_binary '\0',NULL,29,NULL,'2026-03-25','20:00:00.000000',NULL,'PENDING',NULL,'2026-03-25 14:52:32.000000'),(437,'2026-03-25 14:52:32.000000',NULL,_binary '\0',NULL,29,NULL,'2026-03-26','13:00:00.000000',NULL,'PENDING',NULL,'2026-03-25 14:52:32.000000'),(438,'2026-03-25 14:52:32.000000',NULL,_binary '\0',NULL,29,NULL,'2026-03-26','20:00:00.000000',NULL,'PENDING',NULL,'2026-03-25 14:52:32.000000'),(439,'2026-03-25 14:52:32.000000',NULL,_binary '\0',NULL,29,NULL,'2026-03-27','13:00:00.000000',NULL,'PENDING',NULL,'2026-03-25 14:52:32.000000'),(440,'2026-03-25 14:52:32.000000',NULL,_binary '\0',NULL,29,NULL,'2026-03-27','20:00:00.000000',NULL,'PENDING',NULL,'2026-03-25 14:52:32.000000'),(441,'2026-03-25 14:52:32.000000',NULL,_binary '\0',NULL,29,NULL,'2026-03-28','13:00:00.000000',NULL,'PENDING',NULL,'2026-03-25 14:52:32.000000'),(442,'2026-03-25 14:52:32.000000',NULL,_binary '\0',NULL,29,NULL,'2026-03-28','20:00:00.000000',NULL,'PENDING',NULL,'2026-03-25 14:52:32.000000');
+/*!40000 ALTER TABLE `medication_reminders` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `medications`
+--
+
+DROP TABLE IF EXISTS `medications`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `medications` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `brand_names` text COLLATE utf8mb4_general_ci,
+  `common_dosages` text COLLATE utf8mb4_general_ci,
+  `contraindications` text COLLATE utf8mb4_general_ci,
+  `created_at` datetime(6) NOT NULL,
+  `dosage_forms` text COLLATE utf8mb4_general_ci,
+  `drug_class` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `generic_name` varchar(200) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `interactions` text COLLATE utf8mb4_general_ci,
+  `is_controlled_substance` bit(1) NOT NULL,
+  `name` varchar(200) COLLATE utf8mb4_general_ci NOT NULL,
+  `pregnancy_category` enum('A','B','C','D','X','unknown') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `requires_prescription` bit(1) NOT NULL,
+  `side_effects` text COLLATE utf8mb4_general_ci,
+  PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `medication_reminders`
+-- Dumping data for table `medications`
 --
 
-INSERT INTO `medication_reminders` (`id`, `created_at`, `notes`, `notification_sent`, `notification_sent_at`, `record_id`, `response_time_minutes`, `scheduled_date`, `scheduled_time`, `skip_reason`, `status`, `taken_at`, `updated_at`) VALUES
-(412, '2026-02-27 15:36:25.000000', 'Đã uống qua thông báo', b'0', NULL, 28, 1, '2026-02-27', '16:37:00.000000', NULL, 'TAKEN', '2026-02-27 15:38:06.000000', '2026-02-27 15:38:06.000000'),
-(413, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-02-27', '21:00:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(414, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-02-28', '09:00:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(415, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-02-28', '16:37:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(416, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-02-28', '21:00:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(417, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-01', '09:00:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(418, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-01', '16:37:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(419, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-01', '21:00:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(420, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-02', '09:00:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(421, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-02', '16:37:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(422, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-02', '21:00:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(423, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-03', '09:00:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(424, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-03', '16:37:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(425, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-03', '21:00:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(426, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-04', '09:00:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(427, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-04', '16:37:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(428, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-04', '21:00:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(429, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-05', '09:00:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(430, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-05', '16:37:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(431, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-05', '21:00:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(432, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-06', '09:00:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(433, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-06', '16:37:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(434, '2026-02-27 15:36:25.000000', NULL, b'0', NULL, 28, NULL, '2026-03-06', '21:00:00.000000', NULL, 'PENDING', NULL, '2026-02-27 15:36:25.000000'),
-(435, '2026-03-25 14:52:32.000000', NULL, b'0', NULL, 29, NULL, '2026-03-25', '13:00:00.000000', NULL, 'PENDING', NULL, '2026-03-25 14:52:32.000000'),
-(436, '2026-03-25 14:52:32.000000', NULL, b'0', NULL, 29, NULL, '2026-03-25', '20:00:00.000000', NULL, 'PENDING', NULL, '2026-03-25 14:52:32.000000'),
-(437, '2026-03-25 14:52:32.000000', NULL, b'0', NULL, 29, NULL, '2026-03-26', '13:00:00.000000', NULL, 'PENDING', NULL, '2026-03-25 14:52:32.000000'),
-(438, '2026-03-25 14:52:32.000000', NULL, b'0', NULL, 29, NULL, '2026-03-26', '20:00:00.000000', NULL, 'PENDING', NULL, '2026-03-25 14:52:32.000000'),
-(439, '2026-03-25 14:52:32.000000', NULL, b'0', NULL, 29, NULL, '2026-03-27', '13:00:00.000000', NULL, 'PENDING', NULL, '2026-03-25 14:52:32.000000'),
-(440, '2026-03-25 14:52:32.000000', NULL, b'0', NULL, 29, NULL, '2026-03-27', '20:00:00.000000', NULL, 'PENDING', NULL, '2026-03-25 14:52:32.000000'),
-(441, '2026-03-25 14:52:32.000000', NULL, b'0', NULL, 29, NULL, '2026-03-28', '13:00:00.000000', NULL, 'PENDING', NULL, '2026-03-25 14:52:32.000000'),
-(442, '2026-03-25 14:52:32.000000', NULL, b'0', NULL, 29, NULL, '2026-03-28', '20:00:00.000000', NULL, 'PENDING', NULL, '2026-03-25 14:52:32.000000');
-
--- --------------------------------------------------------
+LOCK TABLES `medications` WRITE;
+/*!40000 ALTER TABLE `medications` DISABLE KEYS */;
+/*!40000 ALTER TABLE `medications` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc bảng cho bảng `ml_model_performance`
+-- Table structure for table `ml_model_performance`
 --
 
+DROP TABLE IF EXISTS `ml_model_performance`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `ml_model_performance` (
-  `id` int(11) NOT NULL,
+  `id` int NOT NULL AUTO_INCREMENT,
   `accuracy_rate` decimal(5,2) DEFAULT NULL,
-  `correct_predictions` int(11) NOT NULL,
+  `correct_predictions` int NOT NULL,
   `created_at` datetime(6) NOT NULL,
   `evaluation_date` date NOT NULL,
   `f1_score` decimal(5,2) DEFAULT NULL,
-  `false_negatives` int(11) NOT NULL,
-  `false_positives` int(11) NOT NULL,
-  `model_name` varchar(100) NOT NULL,
-  `model_version` varchar(50) NOT NULL,
-  `notes` text DEFAULT NULL,
-  `performance_by_severity` text DEFAULT NULL,
-  `performance_by_specialty` text DEFAULT NULL,
+  `false_negatives` int NOT NULL,
+  `false_positives` int NOT NULL,
+  `model_name` varchar(100) COLLATE utf8mb4_general_ci NOT NULL,
+  `model_version` varchar(50) COLLATE utf8mb4_general_ci NOT NULL,
+  `notes` text COLLATE utf8mb4_general_ci,
+  `performance_by_severity` text COLLATE utf8mb4_general_ci,
+  `performance_by_specialty` text COLLATE utf8mb4_general_ci,
   `precision_score` decimal(5,2) DEFAULT NULL,
   `recall_score` decimal(5,2) DEFAULT NULL,
-  `total_predictions` int(11) NOT NULL
+  `total_predictions` int NOT NULL,
+  PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc bảng cho bảng `news_articles`
+-- Dumping data for table `ml_model_performance`
 --
 
+LOCK TABLES `ml_model_performance` WRITE;
+/*!40000 ALTER TABLE `ml_model_performance` DISABLE KEYS */;
+/*!40000 ALTER TABLE `ml_model_performance` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `news_articles`
+--
+
+DROP TABLE IF EXISTS `news_articles`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `news_articles` (
-  `id` int(11) NOT NULL,
-  `author` varchar(200) DEFAULT NULL,
-  `bookmark_count` int(11) NOT NULL,
-  `content` longtext DEFAULT NULL,
+  `id` int NOT NULL AUTO_INCREMENT,
+  `author` varchar(200) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `bookmark_count` int NOT NULL,
+  `content` longtext COLLATE utf8mb4_general_ci,
   `created_at` datetime(6) NOT NULL,
   `fact_checked` bit(1) NOT NULL,
-  `image_url` varchar(1000) DEFAULT NULL,
+  `image_url` varchar(1000) COLLATE utf8mb4_general_ci DEFAULT NULL,
   `last_updated` datetime(6) DEFAULT NULL,
   `medical_accuracy_score` decimal(3,2) DEFAULT NULL,
   `publication_date` datetime(6) DEFAULT NULL,
-  `reading_level` enum('advanced','basic','intermediate') DEFAULT NULL,
-  `related_diseases` text DEFAULT NULL,
-  `related_symptoms` text DEFAULT NULL,
-  `share_count` int(11) NOT NULL,
-  `source_name` varchar(100) DEFAULT NULL,
-  `summary` text DEFAULT NULL,
-  `target_audience` enum('general_public','patients','professionals') DEFAULT NULL,
-  `title` varchar(500) NOT NULL,
+  `reading_level` enum('advanced','basic','intermediate') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `related_diseases` text COLLATE utf8mb4_general_ci,
+  `related_symptoms` text COLLATE utf8mb4_general_ci,
+  `share_count` int NOT NULL,
+  `source_name` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `summary` text COLLATE utf8mb4_general_ci,
+  `target_audience` enum('general_public','patients','professionals') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `title` varchar(500) COLLATE utf8mb4_general_ci NOT NULL,
   `updated_at` datetime(6) DEFAULT NULL,
-  `url` varchar(1000) DEFAULT NULL,
-  `view_count` int(11) NOT NULL,
-  `primary_category_id` int(11) DEFAULT NULL
+  `url` varchar(1000) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `view_count` int NOT NULL,
+  `primary_category_id` int DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `FKke29j5hkg9i08d4a8lhb48q6p` (`primary_category_id`),
+  CONSTRAINT `FKke29j5hkg9i08d4a8lhb48q6p` FOREIGN KEY (`primary_category_id`) REFERENCES `medical_specialties` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc bảng cho bảng `ownership_history`
+-- Dumping data for table `news_articles`
 --
 
+LOCK TABLES `news_articles` WRITE;
+/*!40000 ALTER TABLE `news_articles` DISABLE KEYS */;
+/*!40000 ALTER TABLE `news_articles` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `ownership_history`
+--
+
+DROP TABLE IF EXISTS `ownership_history`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `ownership_history` (
-  `id` bigint(20) NOT NULL,
-  `batch_id` bigint(20) NOT NULL,
-  `from_company_id` bigint(20) DEFAULT NULL,
-  `to_company_id` bigint(20) NOT NULL,
-  `transfer_date` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
-  `transfer_type` enum('MANUFACTURE','SHIPMENT','DELIVERY','SALE') NOT NULL,
-  `quantity_transferred` int(11) DEFAULT NULL,
-  `blockchain_tx_hash` varchar(66) NOT NULL,
-  `block_number` bigint(20) DEFAULT NULL,
-  `gas_used` bigint(20) DEFAULT NULL,
-  `event_log_index` int(11) DEFAULT NULL,
-  `notes` text DEFAULT NULL,
-  `created_at` timestamp NOT NULL DEFAULT current_timestamp()
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `batch_id` bigint NOT NULL,
+  `from_company_id` bigint DEFAULT NULL,
+  `to_company_id` bigint NOT NULL,
+  `transfer_date` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `transfer_type` enum('MANUFACTURE','SHIPMENT','DELIVERY','SALE') COLLATE utf8mb4_general_ci NOT NULL,
+  `quantity_transferred` int DEFAULT NULL,
+  `blockchain_tx_hash` varchar(66) COLLATE utf8mb4_general_ci NOT NULL,
+  `block_number` bigint DEFAULT NULL,
+  `gas_used` bigint DEFAULT NULL,
+  `event_log_index` int DEFAULT NULL,
+  `notes` text COLLATE utf8mb4_general_ci,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_ownership_history_batch` (`batch_id`),
+  KEY `idx_ownership_history_tx_hash` (`blockchain_tx_hash`),
+  KEY `idx_ownership_history_transfer_date` (`transfer_date`),
+  KEY `idx_ownership_history_from` (`from_company_id`),
+  KEY `idx_ownership_history_to` (`to_company_id`),
+  KEY `idx_ownership_history_composite` (`batch_id`,`transfer_date`,`transfer_type`),
+  KEY `idx_batch_id` (`batch_id`),
+  KEY `idx_transfer_date` (`transfer_date`),
+  KEY `idx_blockchain_tx_hash` (`blockchain_tx_hash`),
+  KEY `idx_batch_id_oh` (`batch_id`),
+  CONSTRAINT `ownership_history_ibfk_1` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`),
+  CONSTRAINT `ownership_history_ibfk_2` FOREIGN KEY (`from_company_id`) REFERENCES `pharma_companies` (`id`),
+  CONSTRAINT `ownership_history_ibfk_3` FOREIGN KEY (`to_company_id`) REFERENCES `pharma_companies` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc bảng cho bảng `pharmacy_inventory`
+-- Dumping data for table `ownership_history`
 --
 
+LOCK TABLES `ownership_history` WRITE;
+/*!40000 ALTER TABLE `ownership_history` DISABLE KEYS */;
+/*!40000 ALTER TABLE `ownership_history` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `pharma_companies`
+--
+
+DROP TABLE IF EXISTS `pharma_companies`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `pharma_companies` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `name` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `company_type` enum('MANUFACTURER','DISTRIBUTOR','PHARMACY') COLLATE utf8mb4_general_ci NOT NULL,
+  `wallet_address` varchar(42) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `license_number` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `address` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `phone` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `email` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `contact_person` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `registration_number` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `tax_code` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `establishment_date` datetime(6) DEFAULT NULL,
+  `blockchain_verified` tinyint(1) DEFAULT '0',
+  `verification_date` timestamp NULL DEFAULT NULL,
+  `is_active` tinyint(1) DEFAULT '1',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `manufacturer_user_id` varchar(36) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `status` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `license_number` (`license_number`),
+  UNIQUE KEY `wallet_address` (`wallet_address`),
+  UNIQUE KEY `wallet_address_2` (`wallet_address`),
+  UNIQUE KEY `wallet_address_3` (`wallet_address`),
+  KEY `idx_pharma_companies_type` (`company_type`),
+  KEY `idx_pharma_companies_wallet` (`wallet_address`),
+  KEY `idx_pharma_companies_license` (`license_number`),
+  KEY `idx_pharma_companies_active` (`is_active`),
+  KEY `idx_company_type` (`company_type`),
+  KEY `idx_wallet_address` (`wallet_address`),
+  FULLTEXT KEY `name` (`name`,`address`),
+  FULLTEXT KEY `name_2` (`name`,`address`)
+) ENGINE=InnoDB AUTO_INCREMENT=7 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `pharma_companies`
+--
+
+LOCK TABLES `pharma_companies` WRITE;
+/*!40000 ALTER TABLE `pharma_companies` DISABLE KEYS */;
+INSERT INTO `pharma_companies` VALUES (1,'Công ty Dược phẩm ABC','MANUFACTURER','0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266','NSX-2024-001','123 Đường ABC, Quận 1, TP.HCM','0901234567','nsx@demo.com',NULL,NULL,NULL,NULL,0,NULL,1,'2025-09-29 12:00:12','2025-09-29 05:54:41','manu-001-uuid','ACTIVE'),(2,'Traphaco JSC','MANUFACTURER','0x70997970C51812dc3A010C7d01b50e0d17dc79C8','NSX-2024-002','456 Đường DEF, Hà Nội','0902345678','info@traphaco.com.vn',NULL,NULL,NULL,NULL,0,NULL,1,'2025-09-29 12:00:12','2025-09-29 12:00:12',NULL,'ACTIVE'),(3,'Nhà phân phối XYZ','DISTRIBUTOR','0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC','NPP-2024-001','789 Đường GHI, Quận 3, TP.HCM','0903456789','npp@xyz.com',NULL,NULL,NULL,NULL,0,NULL,1,'2025-09-29 12:00:12','2025-09-29 12:00:12',NULL,'ACTIVE'),(4,'Zuellig Pharma Vietnam','DISTRIBUTOR','0x90F79bf6EB2c4f870365E785982E1f101E93b906','NPP-2024-002','321 Đường JKL, Quận 7, TP.HCM','0904567890','vietnam@zuelligpharma.com',NULL,NULL,NULL,NULL,0,NULL,1,'2025-09-29 12:00:12','2025-09-29 12:00:12',NULL,'ACTIVE'),(5,'Hiệu thuốc Long Châu','PHARMACY','0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65','HT-2024-001','Phú Diễn, Hà Nội','0905678901','info@ankhang.com',NULL,NULL,NULL,NULL,0,NULL,1,'2025-09-29 12:00:12','2026-02-15 02:48:49',NULL,'ACTIVE'),(6,'Pharmacity Bình Thạnh','PHARMACY','0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc','HT-2024-002','789 Đường PQR, Quận Bình Thạnh, TP.HCM','0906789012','binhthahn@pharmacity.vn',NULL,NULL,NULL,NULL,0,NULL,1,'2025-09-29 12:00:12','2025-09-29 12:00:12',NULL,'ACTIVE');
+/*!40000 ALTER TABLE `pharma_companies` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `pharmacy_inventory`
+--
+
+DROP TABLE IF EXISTS `pharmacy_inventory`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `pharmacy_inventory` (
-  `id` bigint(20) NOT NULL,
-  `pharmacy_id` bigint(20) NOT NULL COMMENT 'FK to pharma_companies (PHARMACY)',
-  `batch_id` bigint(20) NOT NULL COMMENT 'FK to drug_batches',
-  `drug_name` varchar(255) NOT NULL,
-  `manufacturer` varchar(255) NOT NULL,
-  `batch_number` varchar(100) NOT NULL,
-  `quantity` int(11) NOT NULL DEFAULT 0 COMMENT 'Số lượng hiện có trong kho',
-  `reserved_quantity` int(11) NOT NULL DEFAULT 0 COMMENT 'Số lượng đã được đặt trước (đơn hàng online)',
-  `available_quantity` int(11) GENERATED ALWAYS AS (`quantity` - `reserved_quantity`) STORED COMMENT 'Số lượng có thể bán',
-  `sold_quantity` int(11) NOT NULL DEFAULT 0 COMMENT 'Tổng số lượng đã bán',
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `pharmacy_id` bigint NOT NULL COMMENT 'FK to pharma_companies (PHARMACY)',
+  `batch_id` bigint NOT NULL COMMENT 'FK to drug_batches',
+  `drug_name` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `manufacturer` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `batch_number` varchar(100) COLLATE utf8mb4_general_ci NOT NULL,
+  `quantity` int NOT NULL DEFAULT '0' COMMENT 'Số lượng hiện có trong kho',
+  `reserved_quantity` int NOT NULL DEFAULT '0' COMMENT 'Số lượng đã được đặt trước (đơn hàng online)',
+  `available_quantity` int GENERATED ALWAYS AS ((`quantity` - `reserved_quantity`)) STORED COMMENT 'Số lượng có thể bán',
+  `sold_quantity` int NOT NULL DEFAULT '0' COMMENT 'Tổng số lượng đã bán',
   `manufacture_date` timestamp NULL DEFAULT NULL,
   `expiry_date` timestamp NULL DEFAULT NULL,
-  `qr_code` varchar(1000) DEFAULT NULL,
-  `shelf_location` varchar(100) DEFAULT 'Kệ chính' COMMENT 'Vị trí: Kệ A, Tủ B, Quầy 1, v.v.',
-  `storage_conditions` varchar(500) DEFAULT NULL,
-  `storage_temperature` varchar(50) DEFAULT NULL,
-  `cost_price` decimal(15,2) DEFAULT 0.00 COMMENT 'Giá vốn (mua từ NPP)',
-  `retail_price` decimal(15,2) DEFAULT 0.00 COMMENT 'Giá bán lẻ cho khách hàng',
+  `qr_code` varchar(1000) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `shelf_location` varchar(100) COLLATE utf8mb4_general_ci DEFAULT 'Kệ chính' COMMENT 'Vị trí: Kệ A, Tủ B, Quầy 1, v.v.',
+  `storage_conditions` varchar(500) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `storage_temperature` varchar(50) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `cost_price` decimal(15,2) DEFAULT '0.00' COMMENT 'Giá vốn (mua từ NPP)',
+  `retail_price` decimal(15,2) DEFAULT '0.00' COMMENT 'Giá bán lẻ cho khách hàng',
   `discount_price` decimal(15,2) DEFAULT NULL COMMENT 'Giá khuyến mãi (nếu có)',
-  `total_value` decimal(15,2) GENERATED ALWAYS AS (`quantity` * `cost_price`) STORED,
-  `profit_margin` decimal(5,2) GENERATED ALWAYS AS (case when `cost_price` > 0 then (`retail_price` - `cost_price`) / `cost_price` * 100 else 0 end) STORED COMMENT 'Lợi nhuận %',
-  `status` enum('IN_STOCK','LOW_STOCK','OUT_OF_STOCK','EXPIRING_SOON','EXPIRED','RECALL') DEFAULT 'IN_STOCK',
-  `min_stock_level` int(11) DEFAULT 20 COMMENT 'Ngưỡng cảnh báo hết hàng',
-  `max_stock_level` int(11) DEFAULT 500 COMMENT 'Ngưỡng tồn kho tối đa',
-  `reorder_point` int(11) DEFAULT 30 COMMENT 'Điểm đặt hàng lại',
+  `total_value` decimal(15,2) GENERATED ALWAYS AS ((`quantity` * `cost_price`)) STORED,
+  `profit_margin` decimal(5,2) GENERATED ALWAYS AS ((case when (`cost_price` > 0) then (((`retail_price` - `cost_price`) / `cost_price`) * 100) else 0 end)) STORED COMMENT 'Lợi nhuận %',
+  `status` enum('IN_STOCK','LOW_STOCK','OUT_OF_STOCK','EXPIRING_SOON','EXPIRED','RECALL') COLLATE utf8mb4_general_ci DEFAULT 'IN_STOCK',
+  `min_stock_level` int DEFAULT '20' COMMENT 'Ngưỡng cảnh báo hết hàng',
+  `max_stock_level` int DEFAULT '500' COMMENT 'Ngưỡng tồn kho tối đa',
+  `reorder_point` int DEFAULT '30' COMMENT 'Điểm đặt hàng lại',
   `blockchain_batch_id` decimal(38,0) DEFAULT NULL,
-  `receive_tx_hash` varchar(66) DEFAULT NULL,
-  `current_owner_address` varchar(42) DEFAULT NULL,
-  `is_verified` tinyint(1) DEFAULT 0 COMMENT 'Đã xác thực trên blockchain',
-  `received_from_distributor_id` bigint(20) DEFAULT NULL COMMENT 'Nhận từ NPP nào',
-  `received_shipment_id` bigint(20) DEFAULT NULL COMMENT 'FK to drug_shipments',
+  `receive_tx_hash` varchar(66) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `current_owner_address` varchar(42) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `is_verified` tinyint(1) DEFAULT '0' COMMENT 'Đã xác thực trên blockchain',
+  `received_from_distributor_id` bigint DEFAULT NULL COMMENT 'Nhận từ NPP nào',
+  `received_shipment_id` bigint DEFAULT NULL COMMENT 'FK to drug_shipments',
   `received_date` timestamp NULL DEFAULT NULL,
-  `received_quantity` int(11) DEFAULT 0 COMMENT 'Số lượng nhập ban đầu',
+  `received_quantity` int DEFAULT '0' COMMENT 'Số lượng nhập ban đầu',
   `first_sale_date` timestamp NULL DEFAULT NULL COMMENT 'Ngày bán đầu tiên',
   `last_sale_date` timestamp NULL DEFAULT NULL COMMENT 'Ngày bán gần nhất',
-  `average_daily_sales` decimal(10,2) DEFAULT 0.00 COMMENT 'Trung bình bán/ngày',
-  `days_of_supply` int(11) GENERATED ALWAYS AS (case when `average_daily_sales` > 0 then floor(`available_quantity` / `average_daily_sales`) else 999 end) STORED COMMENT 'Số ngày đủ bán',
-  `requires_prescription` tinyint(1) DEFAULT 0 COMMENT 'Cần đơn thuốc',
-  `controlled_substance` tinyint(1) DEFAULT 0 COMMENT 'Thuốc kiểm soát đặc biệt',
-  `is_featured` tinyint(1) DEFAULT 0 COMMENT 'Sản phẩm nổi bật',
-  `is_on_sale` tinyint(1) DEFAULT 0 COMMENT 'Đang khuyến mãi',
-  `display_order` int(11) DEFAULT 999 COMMENT 'Thứ tự hiển thị',
-  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
-  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
-  `created_by` varchar(36) DEFAULT NULL,
-  `updated_by` varchar(36) DEFAULT NULL,
-  `notes` text DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Quản lý kho của hiệu thuốc';
+  `average_daily_sales` decimal(10,2) DEFAULT '0.00' COMMENT 'Trung bình bán/ngày',
+  `days_of_supply` int GENERATED ALWAYS AS ((case when (`average_daily_sales` > 0) then floor((`available_quantity` / `average_daily_sales`)) else 999 end)) STORED COMMENT 'Số ngày đủ bán',
+  `requires_prescription` tinyint(1) DEFAULT '0' COMMENT 'Cần đơn thuốc',
+  `controlled_substance` tinyint(1) DEFAULT '0' COMMENT 'Thuốc kiểm soát đặc biệt',
+  `is_featured` tinyint(1) DEFAULT '0' COMMENT 'Sản phẩm nổi bật',
+  `is_on_sale` tinyint(1) DEFAULT '0' COMMENT 'Đang khuyến mãi',
+  `display_order` int DEFAULT '999' COMMENT 'Thứ tự hiển thị',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `created_by` varchar(36) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `updated_by` varchar(36) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `notes` text COLLATE utf8mb4_general_ci,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_pharmacy_batch` (`pharmacy_id`,`batch_id`),
+  KEY `idx_pharmacy_id` (`pharmacy_id`),
+  KEY `idx_batch_id` (`batch_id`),
+  KEY `idx_status` (`status`),
+  KEY `idx_expiry_date` (`expiry_date`),
+  KEY `idx_available_quantity` (`available_quantity`),
+  KEY `idx_drug_name` (`drug_name`),
+  KEY `idx_is_featured` (`is_featured`),
+  KEY `fk_pharm_inv_distributor` (`received_from_distributor_id`),
+  KEY `fk_pharm_inv_shipment` (`received_shipment_id`),
+  CONSTRAINT `fk_pharm_inv_batch` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_pharm_inv_distributor` FOREIGN KEY (`received_from_distributor_id`) REFERENCES `pharma_companies` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_pharm_inv_pharmacy` FOREIGN KEY (`pharmacy_id`) REFERENCES `pharma_companies` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_pharm_inv_shipment` FOREIGN KEY (`received_shipment_id`) REFERENCES `drug_shipments` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB AUTO_INCREMENT=12 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Quản lý kho của hiệu thuốc';
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `pharmacy_inventory`
+-- Dumping data for table `pharmacy_inventory`
 --
 
-INSERT INTO `pharmacy_inventory` (`id`, `pharmacy_id`, `batch_id`, `drug_name`, `manufacturer`, `batch_number`, `quantity`, `reserved_quantity`, `sold_quantity`, `manufacture_date`, `expiry_date`, `qr_code`, `shelf_location`, `storage_conditions`, `storage_temperature`, `cost_price`, `retail_price`, `discount_price`, `status`, `min_stock_level`, `max_stock_level`, `reorder_point`, `blockchain_batch_id`, `receive_tx_hash`, `current_owner_address`, `is_verified`, `received_from_distributor_id`, `received_shipment_id`, `received_date`, `received_quantity`, `first_sale_date`, `last_sale_date`, `average_daily_sales`, `requires_prescription`, `controlled_substance`, `is_featured`, `is_on_sale`, `display_order`, `created_at`, `updated_at`, `created_by`, `updated_by`, `notes`) VALUES
-(8, 5, 96, 'Azithromycin 500mg', 'Dược Hậu Giang', 'BT202602262049', 5, 0, 0, '2026-02-26 13:49:58', '2028-02-26 16:59:59', 'NCKH-PHARMA-3EF547F65715D3-BT202602262049', 'Kệ chính', NULL, NULL, 0.00, 0.00, NULL, 'IN_STOCK', 20, 500, 30, 17721137980446163, NULL, '0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65', 1, 3, 63, '2026-02-26 14:29:03', 5, NULL, NULL, 0.00, 0, 0, 0, 0, 999, '2026-02-26 14:29:03', '2026-02-26 14:29:03', NULL, NULL, NULL),
-(9, 5, 98, 'Klamentin 1g', 'Dược Hậu Giang', 'BT202603091219', 5, 0, 0, '2026-03-09 05:19:01', '2028-03-09 16:59:59', 'NCKH-PHARMA-3EFDA568234FBC-BT202603091219', 'Kệ chính', NULL, NULL, 0.00, 0.00, NULL, 'IN_STOCK', 20, 500, 30, 17730335414636476, NULL, '0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65', 1, 3, 66, '2026-03-25 08:04:33', 5, NULL, NULL, 0.00, 0, 0, 0, 0, 999, '2026-03-25 08:04:33', '2026-03-25 08:04:33', NULL, NULL, NULL);
+LOCK TABLES `pharmacy_inventory` WRITE;
+/*!40000 ALTER TABLE `pharmacy_inventory` DISABLE KEYS */;
+INSERT INTO `pharmacy_inventory` (`id`, `pharmacy_id`, `batch_id`, `drug_name`, `manufacturer`, `batch_number`, `quantity`, `reserved_quantity`, `sold_quantity`, `manufacture_date`, `expiry_date`, `qr_code`, `shelf_location`, `storage_conditions`, `storage_temperature`, `cost_price`, `retail_price`, `discount_price`, `status`, `min_stock_level`, `max_stock_level`, `reorder_point`, `blockchain_batch_id`, `receive_tx_hash`, `current_owner_address`, `is_verified`, `received_from_distributor_id`, `received_shipment_id`, `received_date`, `received_quantity`, `first_sale_date`, `last_sale_date`, `average_daily_sales`, `requires_prescription`, `controlled_substance`, `is_featured`, `is_on_sale`, `display_order`, `created_at`, `updated_at`, `created_by`, `updated_by`, `notes`) VALUES (8,5,96,'Azithromycin 500mg','Dược Hậu Giang','BT202602262049',5,0,0,'2026-02-26 13:49:58','2028-02-26 16:59:59','NCKH-PHARMA-3EF547F65715D3-BT202602262049','Kệ chính',NULL,NULL,0.00,0.00,NULL,'IN_STOCK',20,500,30,17721137980446163,NULL,'0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65',1,3,63,'2026-02-26 14:29:03',5,NULL,NULL,0.00,0,0,0,0,999,'2026-02-26 14:29:03','2026-02-26 14:29:03',NULL,NULL,NULL),(9,5,98,'Klamentin 1g','Dược Hậu Giang','BT202603091219',5,0,0,'2026-03-09 05:19:01','2028-03-09 16:59:59','NCKH-PHARMA-3EFDA568234FBC-BT202603091219','Kệ chính',NULL,NULL,0.00,0.00,NULL,'IN_STOCK',20,500,30,17730335414636476,NULL,'0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65',1,3,66,'2026-03-25 08:04:33',5,NULL,NULL,0.00,0,0,0,0,999,'2026-03-25 08:04:33','2026-03-25 08:04:33',NULL,NULL,NULL),(10,5,99,'Augmentin 1g','Dược Hậu Giang','BT202603251447',7,0,0,'2026-03-25 14:47:07','2028-03-31 23:59:59','NCKH-PHARMA-3F0A4CBF6C90D1-BT202603251447','Kệ chính',NULL,NULL,0.00,0.00,NULL,'LOW_STOCK',20,500,30,17744248278126801,NULL,'0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65',1,3,68,'2026-04-27 12:57:12',1,NULL,NULL,0.00,0,0,0,0,999,'2026-04-27 12:57:08','2026-04-27 12:57:12',NULL,NULL,NULL),(11,6,40,'Biosubtyl-II','Dược Hậu Giang','BT202605231424',100,0,0,'2026-05-23 14:24:11','2027-02-20 23:59:59','NCKH-PHARMA-3F38A65140F79C-BT202605231424','Kệ chính',NULL,NULL,0.00,0.00,NULL,'IN_STOCK',20,500,30,24,NULL,'0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc',1,4,20,'2026-05-23 14:37:21',100,NULL,NULL,0.00,0,0,0,0,999,'2026-05-23 14:37:21','2026-05-23 14:37:21',NULL,NULL,NULL);
+/*!40000 ALTER TABLE `pharmacy_inventory` ENABLE KEYS */;
+UNLOCK TABLES;
+/*!50003 SET @saved_cs_client      = @@character_set_client */ ;
+/*!50003 SET @saved_cs_results     = @@character_set_results */ ;
+/*!50003 SET @saved_col_connection = @@collation_connection */ ;
+/*!50003 SET character_set_client  = utf8mb4 */ ;
+/*!50003 SET character_set_results = utf8mb4 */ ;
+/*!50003 SET collation_connection  = utf8mb4_0900_ai_ci */ ;
+/*!50003 SET @saved_sql_mode       = @@sql_mode */ ;
+/*!50003 SET sql_mode              = 'NO_AUTO_VALUE_ON_ZERO' */ ;
+DELIMITER ;;
+/*!50003 CREATE*/ /*!50017 DEFINER=`root`@`localhost`*/ /*!50003 TRIGGER `trg_pharmacy_inventory_status_update` BEFORE UPDATE ON `pharmacy_inventory` FOR EACH ROW BEGIN
+    DECLARE days_to_expiry INT;
+    SET days_to_expiry = DATEDIFF(NEW.expiry_date, NOW());
 
---
--- Bẫy `pharmacy_inventory`
---
-DELIMITER $$
-CREATE TRIGGER `trg_pharmacy_inventory_movement_log` AFTER UPDATE ON `pharmacy_inventory` FOR EACH ROW BEGIN
+    
+    IF days_to_expiry < 0 THEN
+        SET NEW.status = 'EXPIRED';
+    
+    ELSEIF days_to_expiry <= 30 THEN
+        SET NEW.status = 'EXPIRING_SOON';
+    
+    ELSEIF NEW.available_quantity <= 0 THEN
+        SET NEW.status = 'OUT_OF_STOCK';
+    
+    ELSEIF NEW.available_quantity <= NEW.min_stock_level THEN
+        SET NEW.status = 'LOW_STOCK';
+    ELSE
+        SET NEW.status = 'IN_STOCK';
+    END IF;
+END */;;
+DELIMITER ;
+/*!50003 SET sql_mode              = @saved_sql_mode */ ;
+/*!50003 SET character_set_client  = @saved_cs_client */ ;
+/*!50003 SET character_set_results = @saved_cs_results */ ;
+/*!50003 SET collation_connection  = @saved_col_connection */ ;
+/*!50003 SET @saved_cs_client      = @@character_set_client */ ;
+/*!50003 SET @saved_cs_results     = @@character_set_results */ ;
+/*!50003 SET @saved_col_connection = @@collation_connection */ ;
+/*!50003 SET character_set_client  = utf8mb4 */ ;
+/*!50003 SET character_set_results = utf8mb4 */ ;
+/*!50003 SET collation_connection  = utf8mb4_0900_ai_ci */ ;
+/*!50003 SET @saved_sql_mode       = @@sql_mode */ ;
+/*!50003 SET sql_mode              = 'NO_AUTO_VALUE_ON_ZERO' */ ;
+DELIMITER ;;
+/*!50003 CREATE*/ /*!50017 DEFINER=`root`@`localhost`*/ /*!50003 TRIGGER `trg_pharmacy_inventory_movement_log` AFTER UPDATE ON `pharmacy_inventory` FOR EACH ROW BEGIN
     IF OLD.quantity != NEW.quantity THEN
         INSERT INTO `inventory_movements` (
             `inventory_type`,
@@ -1139,1883 +1256,1221 @@ CREATE TRIGGER `trg_pharmacy_inventory_movement_log` AFTER UPDATE ON `pharmacy_i
             NOW()
         );
     END IF;
-END
-$$
+END */;;
 DELIMITER ;
-DELIMITER $$
-CREATE TRIGGER `trg_pharmacy_inventory_status_update` BEFORE UPDATE ON `pharmacy_inventory` FOR EACH ROW BEGIN
-    DECLARE days_to_expiry INT;
-    SET days_to_expiry = DATEDIFF(NEW.expiry_date, NOW());
-
-    -- Kiểm tra hết hạn
-    IF days_to_expiry < 0 THEN
-        SET NEW.status = 'EXPIRED';
-    -- Sắp hết hạn (30 ngày)
-    ELSEIF days_to_expiry <= 30 THEN
-        SET NEW.status = 'EXPIRING_SOON';
-    -- Hết hàng
-    ELSEIF NEW.available_quantity <= 0 THEN
-        SET NEW.status = 'OUT_OF_STOCK';
-    -- Tồn kho thấp
-    ELSEIF NEW.available_quantity <= NEW.min_stock_level THEN
-        SET NEW.status = 'LOW_STOCK';
-    ELSE
-        SET NEW.status = 'IN_STOCK';
-    END IF;
-END
-$$
-DELIMITER ;
-
--- --------------------------------------------------------
+/*!50003 SET sql_mode              = @saved_sql_mode */ ;
+/*!50003 SET character_set_client  = @saved_cs_client */ ;
+/*!50003 SET character_set_results = @saved_cs_results */ ;
+/*!50003 SET collation_connection  = @saved_col_connection */ ;
 
 --
--- Cấu trúc bảng cho bảng `pharmacy_users`
+-- Table structure for table `pharmacy_users`
 --
 
+DROP TABLE IF EXISTS `pharmacy_users`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `pharmacy_users` (
-  `id` bigint(20) NOT NULL,
-  `email` varchar(255) NOT NULL,
-  `password` varchar(255) NOT NULL,
-  `pharmacy_name` varchar(255) NOT NULL,
-  `pharmacy_code` varchar(255) DEFAULT NULL,
-  `wallet_address` varchar(42) DEFAULT NULL,
-  `address` varchar(255) DEFAULT NULL,
-  `phone` varchar(255) DEFAULT NULL,
-  `is_active` tinyint(1) NOT NULL DEFAULT 1,
-  `is_profile_complete` tinyint(1) NOT NULL DEFAULT 0,
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `email` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `password` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `pharmacy_name` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `pharmacy_code` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `wallet_address` varchar(42) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `address` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `phone` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `is_active` tinyint(1) NOT NULL DEFAULT '1',
+  `is_profile_complete` tinyint(1) NOT NULL DEFAULT '0',
   `last_login_at` timestamp NULL DEFAULT NULL,
-  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
-  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `email` (`email`),
+  UNIQUE KEY `pharmacy_code` (`pharmacy_code`),
+  UNIQUE KEY `wallet_address` (`wallet_address`),
+  KEY `idx_email` (`email`),
+  KEY `idx_wallet_address` (`wallet_address`),
+  KEY `idx_pharmacy_code` (`pharmacy_code`)
+) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `pharmacy_users`
+-- Dumping data for table `pharmacy_users`
 --
 
-INSERT INTO `pharmacy_users` (`id`, `email`, `password`, `pharmacy_name`, `pharmacy_code`, `wallet_address`, `address`, `phone`, `is_active`, `is_profile_complete`, `last_login_at`, `created_at`, `updated_at`) VALUES
-(1, 'pharmacy@ankhang.com', '$2a$10$MDxKhLpYxBs0uadHKywfa.HweyWMBVmyEpahToXZOCWHje1X5nY9u', 'Hiệu thuốc Long Châu', 'HT-2024-001', '0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65', 'Phú diễn, Hà Nội', '0905678901', 1, 1, '2025-12-13 11:01:25', '2025-09-30 07:45:42', '2026-02-15 02:48:06'),
-(2, 'pharmacy@pharmacity.vn', '$2a$10$MDxKhLpYxBs0uadHKywfa.HweyWMBVmyEpahToXZOCWHje1X5nY9u', 'Pharmacity Bình Thạnh', 'HT-2024-002', '0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc', '789 Đường PQR, Quận Bình Thạnh, TP.HCM', '0906789012', 1, 1, NULL, '2025-09-30 07:45:42', '2025-09-30 07:45:42');
-
--- --------------------------------------------------------
-
---
--- Cấu trúc bảng cho bảng `pharma_companies`
---
-
-CREATE TABLE `pharma_companies` (
-  `id` bigint(20) NOT NULL,
-  `name` varchar(255) NOT NULL,
-  `company_type` enum('MANUFACTURER','DISTRIBUTOR','PHARMACY') NOT NULL,
-  `wallet_address` varchar(42) DEFAULT NULL,
-  `license_number` varchar(255) DEFAULT NULL,
-  `address` varchar(255) DEFAULT NULL,
-  `phone` varchar(255) DEFAULT NULL,
-  `email` varchar(255) DEFAULT NULL,
-  `contact_person` varchar(255) DEFAULT NULL,
-  `registration_number` varchar(255) DEFAULT NULL,
-  `tax_code` varchar(255) DEFAULT NULL,
-  `establishment_date` datetime(6) DEFAULT NULL,
-  `blockchain_verified` tinyint(1) DEFAULT 0,
-  `verification_date` timestamp NULL DEFAULT NULL,
-  `is_active` tinyint(1) DEFAULT 1,
-  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
-  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
-  `manufacturer_user_id` varchar(36) DEFAULT NULL,
-  `status` varchar(255) DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+LOCK TABLES `pharmacy_users` WRITE;
+/*!40000 ALTER TABLE `pharmacy_users` DISABLE KEYS */;
+INSERT INTO `pharmacy_users` VALUES (1,'pharmacy@ankhang.com','$2a$10$MDxKhLpYxBs0uadHKywfa.HweyWMBVmyEpahToXZOCWHje1X5nY9u','Hiệu thuốc Long Châu','HT-2024-001','0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65','Phú diễn, Hà Nội','0905678901',1,1,'2026-04-27 22:50:20','2025-09-30 07:45:42','2026-04-27 22:50:20'),(2,'pharmacy@pharmacity.vn','$2a$10$MDxKhLpYxBs0uadHKywfa.HweyWMBVmyEpahToXZOCWHje1X5nY9u','Pharmacity Bình Thạnh','HT-2024-002','0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc','789 Đường PQR, Quận Bình Thạnh, TP.HCM','0906789012',1,1,'2026-05-23 14:36:31','2025-09-30 07:45:42','2026-05-23 14:36:31');
+/*!40000 ALTER TABLE `pharmacy_users` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Đang đổ dữ liệu cho bảng `pharma_companies`
+-- Table structure for table `product_item_movements`
 --
 
-INSERT INTO `pharma_companies` (`id`, `name`, `company_type`, `wallet_address`, `license_number`, `address`, `phone`, `email`, `contact_person`, `registration_number`, `tax_code`, `establishment_date`, `blockchain_verified`, `verification_date`, `is_active`, `created_at`, `updated_at`, `manufacturer_user_id`, `status`) VALUES
-(1, 'Công ty Dược phẩm ABC', 'MANUFACTURER', '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', 'NSX-2024-001', '123 Đường ABC, Quận 1, TP.HCM', '0901234567', 'nsx@demo.com', NULL, NULL, NULL, NULL, 0, NULL, 1, '2025-09-29 12:00:12', '2025-09-29 05:54:41', 'manu-001-uuid', 'ACTIVE'),
-(2, 'Traphaco JSC', 'MANUFACTURER', '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', 'NSX-2024-002', '456 Đường DEF, Hà Nội', '0902345678', 'info@traphaco.com.vn', NULL, NULL, NULL, NULL, 0, NULL, 1, '2025-09-29 12:00:12', '2025-09-29 12:00:12', NULL, 'ACTIVE'),
-(3, 'Nhà phân phối XYZ', 'DISTRIBUTOR', '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC', 'NPP-2024-001', '789 Đường GHI, Quận 3, TP.HCM', '0903456789', 'npp@xyz.com', NULL, NULL, NULL, NULL, 0, NULL, 1, '2025-09-29 12:00:12', '2025-09-29 12:00:12', NULL, 'ACTIVE'),
-(4, 'Zuellig Pharma Vietnam', 'DISTRIBUTOR', '0x90F79bf6EB2c4f870365E785982E1f101E93b906', 'NPP-2024-002', '321 Đường JKL, Quận 7, TP.HCM', '0904567890', 'vietnam@zuelligpharma.com', NULL, NULL, NULL, NULL, 0, NULL, 1, '2025-09-29 12:00:12', '2025-09-29 12:00:12', NULL, 'ACTIVE'),
-(5, 'Hiệu thuốc Long Châu', 'PHARMACY', '0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65', 'HT-2024-001', 'Phú Diễn, Hà Nội', '0905678901', 'info@ankhang.com', NULL, NULL, NULL, NULL, 0, NULL, 1, '2025-09-29 12:00:12', '2026-02-15 02:48:49', NULL, 'ACTIVE'),
-(6, 'Pharmacity Bình Thạnh', 'PHARMACY', '0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc', 'HT-2024-002', '789 Đường PQR, Quận Bình Thạnh, TP.HCM', '0906789012', 'binhthahn@pharmacity.vn', NULL, NULL, NULL, NULL, 0, NULL, 1, '2025-09-29 12:00:12', '2025-09-29 12:00:12', NULL, 'ACTIVE');
-
--- --------------------------------------------------------
-
---
--- Cấu trúc bảng cho bảng `product_items`
---
-
-CREATE TABLE `product_items` (
-  `id` bigint(20) NOT NULL,
-  `item_code` varchar(100) NOT NULL COMMENT 'Mã sản phẩm duy nhất, VD: PARA-BATCH001-0001',
-  `batch_id` bigint(20) NOT NULL COMMENT 'FK to drug_batches',
-  `drug_product_id` bigint(20) NOT NULL COMMENT 'FK to drug_products',
-  `qr_code_data` varchar(500) DEFAULT NULL COMMENT 'Dữ liệu trong QR (URL hoặc JSON)',
-  `qr_image_path` varchar(500) DEFAULT NULL COMMENT 'Đường dẫn file QR image (S3/MinIO)',
-  `qr_generated_at` datetime(6) DEFAULT NULL,
-  `current_status` enum('MANUFACTURED','IN_WAREHOUSE','IN_TRANSIT','DELIVERED','SOLD','EXPIRED','RECALLED','DAMAGED') NOT NULL DEFAULT 'MANUFACTURED' COMMENT 'Trạng thái hiện tại của sản phẩm',
-  `current_owner_id` bigint(20) DEFAULT NULL COMMENT 'ID công ty đang sở hữu',
-  `current_owner_type` enum('MANUFACTURER','DISTRIBUTOR','PHARMACY','CONSUMER') DEFAULT NULL COMMENT 'Loại chủ sở hữu',
-  `manufacture_date` datetime(6) NOT NULL,
-  `expiry_date` datetime(6) NOT NULL,
-  `blockchain_token_id` bigint(20) DEFAULT NULL COMMENT 'Token ID trên blockchain (nếu dùng NFT)',
-  `blockchain_merkle_proof` text DEFAULT NULL COMMENT 'Merkle proof để verify',
-  `is_blockchain_synced` bit(1) NOT NULL DEFAULT b'0',
-  `notes` text DEFAULT NULL,
-  `created_at` datetime(6) NOT NULL DEFAULT current_timestamp(6),
-  `updated_at` datetime(6) DEFAULT NULL ON UPDATE current_timestamp(6),
-  `sold_at` datetime(6) DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Bảng quản lý từng sản phẩm riêng lẻ với QR code tracking';
-
---
--- Đang đổ dữ liệu cho bảng `product_items`
---
-
-INSERT INTO `product_items` (`id`, `item_code`, `batch_id`, `drug_product_id`, `qr_code_data`, `qr_image_path`, `qr_generated_at`, `current_status`, `current_owner_id`, `current_owner_type`, `manufacture_date`, `expiry_date`, `blockchain_token_id`, `blockchain_merkle_proof`, `is_blockchain_synced`, `notes`, `created_at`, `updated_at`, `sold_at`) VALUES
-(500, 'AN500-2555689', 96, 28, 'AN500-2555689', NULL, '2026-02-26 20:49:58.000000', 'SOLD', NULL, 'CONSUMER', '2026-02-26 20:49:58.000000', '2028-02-26 23:59:59.000000', NULL, '0x8fbe1c4dfe0925696911aea0eb117daefcaf74bc52dc7f8b2261a8b8352649c1,0x9bdeab5c4ad4ba2a5d215486ca9d600d74c90edd678ac2f69c4aa179ecc65829,0xcb9970f7f7b3110d0b5b99c707679ad42f70ccb9fcd9e18e594e8cfe035fd41e', b'1', '\n[Blockchain] Registered in TX: 0x90b92a774d4708b355abece126d2efc7740ea72030fd118953d22d1f2428e6a0 at block 2026-02-26T20:49:58.360016200\n[SALE] Sold at Hiệu thuốc An Khang on 2026-02-26T21:29:22.814278100. Buyer: Walk-in customer', '2026-02-26 20:49:58.000000', '2026-02-26 21:29:22.000000', '2026-02-26 21:29:22.000000'),
-(501, 'AN500-7030250', 96, 28, 'AN500-7030250', NULL, '2026-02-26 20:49:58.000000', 'SOLD', NULL, 'CONSUMER', '2026-02-26 20:49:58.000000', '2028-02-26 23:59:59.000000', NULL, '0xc396ffb08fbd0319314ec99616f4ee6437723ff3b4d278bc1d08709bb3686f1e,0xe0d489b28daee7873ec8f8800cc1d9b74abb222d47edc180be7b4f5d015f92c9,0xcb9970f7f7b3110d0b5b99c707679ad42f70ccb9fcd9e18e594e8cfe035fd41e', b'1', '\n[Blockchain] Registered in TX: 0x90b92a774d4708b355abece126d2efc7740ea72030fd118953d22d1f2428e6a0 at block 2026-02-26T20:49:58.360016200', '2026-02-26 20:49:58.000000', '2026-02-27 09:33:15.000000', NULL),
-(502, 'AN500-7941538', 96, 28, 'AN500-7941538', NULL, '2026-02-26 20:49:58.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-02-26 20:49:58.000000', '2028-02-26 23:59:59.000000', NULL, '0x2c03a3ab52610f2dc03ccdf8a1c7a985fdcb745ff7ee408fd46dafb639e375d5', b'1', '\n[Blockchain] Registered in TX: 0x90b92a774d4708b355abece126d2efc7740ea72030fd118953d22d1f2428e6a0 at block 2026-02-26T20:49:58.361015400', '2026-02-26 20:49:58.000000', '2026-02-26 20:49:58.000000', NULL),
-(503, 'AN500-2017645', 96, 28, 'AN500-2017645', NULL, '2026-02-26 20:49:58.000000', 'DAMAGED', NULL, 'MANUFACTURER', '2026-02-26 20:49:58.000000', '2028-02-26 23:59:59.000000', NULL, '0x8c5a45fa6d7aad3d4a8b9f4e6c03c68deeda7bbe71d729f23890cc68a08767d0,0x9bdeab5c4ad4ba2a5d215486ca9d600d74c90edd678ac2f69c4aa179ecc65829,0xcb9970f7f7b3110d0b5b99c707679ad42f70ccb9fcd9e18e594e8cfe035fd41e', b'1', '\n[Blockchain] Registered in TX: 0x90b92a774d4708b355abece126d2efc7740ea72030fd118953d22d1f2428e6a0 at block 2026-02-26T20:49:58.361015400\n[DAMAGED REPORT] Time: 2026-03-01T22:12:47.758564800. Reason: Bị hỏng vỡ hộp. Image: http://10.10.33.186:8080/uploads/40c03469-4470-470d-a23a-023c8767a96c.jpg', '2026-02-26 20:49:58.000000', '2026-03-01 22:12:47.000000', NULL),
-(504, 'AN500-9051289', 96, 28, 'AN500-9051289', NULL, '2026-02-26 20:49:58.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-02-26 20:49:58.000000', '2028-02-26 23:59:59.000000', NULL, '0x9a69dd310964c57c8c4b6ed856b405f1c96fb80e1d52c4e4db16f141d823de38,0xe0d489b28daee7873ec8f8800cc1d9b74abb222d47edc180be7b4f5d015f92c9,0xcb9970f7f7b3110d0b5b99c707679ad42f70ccb9fcd9e18e594e8cfe035fd41e', b'1', '\n[Blockchain] Registered in TX: 0x90b92a774d4708b355abece126d2efc7740ea72030fd118953d22d1f2428e6a0 at block 2026-02-26T20:49:58.361015400', '2026-02-26 20:49:58.000000', '2026-02-26 20:49:58.000000', NULL),
-(505, 'AN-9329264', 97, 19, 'AN-9329264', NULL, '2026-03-09 07:55:37.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-03-09 07:55:37.000000', '2028-03-09 23:59:59.000000', NULL, '0x85eb7f9158b0b3b4d69eba076796519ee6533c9d5afc91f758dd28059c7a279e,0xc8d16799b2d633c5474a8ecf4bafde57fd752d57954347061fe021dfef3e944c,0xe5ec00b771c5ecf1c83fa5c63b663a54a8c2f0dc9069bf809d283ccbcf30d273', b'1', '\n[Blockchain] Registered in TX: 0x019b0a0d063e8528fd7895449a3502b795152907fe5b64ed05c5f8e4955d58fb at block 2026-03-09T07:55:37.448524300', '2026-03-09 07:55:37.000000', '2026-03-09 07:55:37.000000', NULL),
-(506, 'AN-9775788', 97, 19, 'AN-9775788', NULL, '2026-03-09 07:55:37.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-03-09 07:55:37.000000', '2028-03-09 23:59:59.000000', NULL, '0xb1b4e6fa73ba34160708e5b60730fe93651564016fa04d5fb3c2f5ee92a43e10,0x08338aaf2ae52c18bbd2ea93a8936c09c226ece02033802d43342724471b31b6,0xe5ec00b771c5ecf1c83fa5c63b663a54a8c2f0dc9069bf809d283ccbcf30d273', b'1', '\n[Blockchain] Registered in TX: 0x019b0a0d063e8528fd7895449a3502b795152907fe5b64ed05c5f8e4955d58fb at block 2026-03-09T07:55:37.449072200', '2026-03-09 07:55:37.000000', '2026-03-09 07:55:37.000000', NULL),
-(507, 'AN-8263104', 97, 19, 'AN-8263104', NULL, '2026-03-09 07:55:37.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-03-09 07:55:37.000000', '2028-03-09 23:59:59.000000', NULL, '0xeafb007c2365650619b8d51f3e33197be089a4feb8165b96fe58dd9b6bc5ad57', b'1', '\n[Blockchain] Registered in TX: 0x019b0a0d063e8528fd7895449a3502b795152907fe5b64ed05c5f8e4955d58fb at block 2026-03-09T07:55:37.449072200', '2026-03-09 07:55:37.000000', '2026-03-09 07:55:37.000000', NULL),
-(508, 'AN-2982607', 97, 19, 'AN-2982607', NULL, '2026-03-09 07:55:37.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-03-09 07:55:37.000000', '2028-03-09 23:59:59.000000', NULL, '0x7188e3bbfdbe8c3a0e20d45e09094e60e0c4d31ee01a958f86abfb094a66829c,0xc8d16799b2d633c5474a8ecf4bafde57fd752d57954347061fe021dfef3e944c,0xe5ec00b771c5ecf1c83fa5c63b663a54a8c2f0dc9069bf809d283ccbcf30d273', b'1', '\n[Blockchain] Registered in TX: 0x019b0a0d063e8528fd7895449a3502b795152907fe5b64ed05c5f8e4955d58fb at block 2026-03-09T07:55:37.449613', '2026-03-09 07:55:37.000000', '2026-03-09 07:55:37.000000', NULL),
-(509, 'AN-0816565', 97, 19, 'AN-0816565', NULL, '2026-03-09 07:55:37.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-03-09 07:55:37.000000', '2028-03-09 23:59:59.000000', NULL, '0xcfddb438f6a0bc424093673a0d954ace41f8804f1b7ef5aeb936fc1a729ea6b5,0x08338aaf2ae52c18bbd2ea93a8936c09c226ece02033802d43342724471b31b6,0xe5ec00b771c5ecf1c83fa5c63b663a54a8c2f0dc9069bf809d283ccbcf30d273', b'1', '\n[Blockchain] Registered in TX: 0x019b0a0d063e8528fd7895449a3502b795152907fe5b64ed05c5f8e4955d58fb at block 2026-03-09T07:55:37.450185500', '2026-03-09 07:55:37.000000', '2026-03-09 07:55:37.000000', NULL),
-(510, 'KN-6279230', 98, 21, 'KN-6279230', NULL, '2026-03-09 12:19:01.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-03-09 12:19:01.000000', '2028-03-09 23:59:59.000000', NULL, '0xb90c5dba7e7143a9ed2fa084f88285e6e50fbfa0d163f18efde82c48f04b3f57', b'1', '\n[Blockchain] Registered in TX: 0x7118b536bc89a29fdeb40f6548fd9fdb90120cbc4348ac91fc9e8a7a87749d2f at block 2026-03-09T12:19:01.675155300', '2026-03-09 12:19:01.000000', '2026-03-09 12:19:01.000000', NULL),
-(511, 'KN-8261669', 98, 21, 'KN-8261669', NULL, '2026-03-09 12:19:01.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-03-09 12:19:01.000000', '2028-03-09 23:59:59.000000', NULL, '0xdfd2a35fad3040593862c3ccf6df4a56f4df7c2153486b175c79999b191d279a,0xdeb11c0f6ed65372636b6746417d7abb6d870809ed73de1bb44610d0f6b5697f,0xf7d1e745d5376ee82ff4274d5c79cf32c471959ab7842911b4fab7ffff90c8d4', b'1', '\n[Blockchain] Registered in TX: 0x7118b536bc89a29fdeb40f6548fd9fdb90120cbc4348ac91fc9e8a7a87749d2f at block 2026-03-09T12:19:01.676967600', '2026-03-09 12:19:01.000000', '2026-03-09 12:19:01.000000', NULL),
-(512, 'KN-0766684', 98, 21, 'KN-0766684', NULL, '2026-03-09 12:19:01.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-03-09 12:19:01.000000', '2028-03-09 23:59:59.000000', NULL, '0x3cb3c477014eb0a4422de83babf00459d482e39a393a15262e7b0f50ced28949,0x6f31fa4ddab869571b47495ab735fe961899ee0566ad70623211739de4ea7b79,0xf7d1e745d5376ee82ff4274d5c79cf32c471959ab7842911b4fab7ffff90c8d4', b'1', '\n[Blockchain] Registered in TX: 0x7118b536bc89a29fdeb40f6548fd9fdb90120cbc4348ac91fc9e8a7a87749d2f at block 2026-03-09T12:19:01.677664400', '2026-03-09 12:19:01.000000', '2026-03-09 12:19:01.000000', NULL),
-(513, 'KN-8848334', 98, 21, 'KN-8848334', NULL, '2026-03-09 12:19:01.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-03-09 12:19:01.000000', '2028-03-09 23:59:59.000000', NULL, '0x691df68224da92e4e090bd03b65c08cdd8f7f38de1ff2b03a001047a1119783b,0x6f31fa4ddab869571b47495ab735fe961899ee0566ad70623211739de4ea7b79,0xf7d1e745d5376ee82ff4274d5c79cf32c471959ab7842911b4fab7ffff90c8d4', b'1', '\n[Blockchain] Registered in TX: 0x7118b536bc89a29fdeb40f6548fd9fdb90120cbc4348ac91fc9e8a7a87749d2f at block 2026-03-09T12:19:01.678590200', '2026-03-09 12:19:01.000000', '2026-03-09 12:19:01.000000', NULL),
-(514, 'KN-1098805', 98, 21, 'KN-1098805', NULL, '2026-03-09 12:19:01.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-03-09 12:19:01.000000', '2028-03-09 23:59:59.000000', NULL, '0xbf2366d4d3269665b0d50f7c2445580065c41945b3f87d4452cce1753b16cbf9,0xdeb11c0f6ed65372636b6746417d7abb6d870809ed73de1bb44610d0f6b5697f,0xf7d1e745d5376ee82ff4274d5c79cf32c471959ab7842911b4fab7ffff90c8d4', b'1', '\n[Blockchain] Registered in TX: 0x7118b536bc89a29fdeb40f6548fd9fdb90120cbc4348ac91fc9e8a7a87749d2f at block 2026-03-09T12:19:01.678590200', '2026-03-09 12:19:01.000000', '2026-03-09 12:19:01.000000', NULL),
-(515, 'AN-9625992', 99, 19, 'AN-9625992', NULL, '2026-03-25 14:47:07.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-03-25 14:47:07.000000', '2028-03-31 23:59:59.000000', NULL, '', b'1', '\n[Blockchain] Registered in TX: 0x2c7b4ea024aea85978db5c3f4de83b53319caed672c62e975db150827bba5941 at block 2026-03-25T14:47:07.993820600', '2026-03-25 14:47:07.000000', '2026-03-25 14:47:08.000000', NULL),
-(516, 'KN-4076148', 100, 20, 'KN-4076148', NULL, '2026-03-25 15:00:37.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-03-25 15:00:37.000000', '2028-03-25 23:59:59.000000', NULL, '0x2cd5ce27dd50d082d5dd585927209d136c0171dbee38d14fc48e22812a87bd08', b'1', '\n[Blockchain] Registered in TX: 0xb42abf0586a4f518a733dd89a58750e4c040aec4892eea5b6be70ea83d9e7ddf at block 2026-03-25T15:00:37.285254900', '2026-03-25 15:00:37.000000', '2026-03-25 15:00:37.000000', NULL),
-(517, 'KN-7745200', 100, 20, 'KN-7745200', NULL, '2026-03-25 15:00:37.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-03-25 15:00:37.000000', '2028-03-25 23:59:59.000000', NULL, '0x6752479b00da6aac9112e3b03dc5b56c5404850fb32463d410372cc68dd6253b,0x39a0a10b3e74b73008bfd1e4b6b3cdfec49a11e7d1be6417143fe75cba97cc9d,0xfa893afbae4354a0f100de6dfea769c4272a98d5dab1a86d12df4566cf24a8f7', b'1', '\n[Blockchain] Registered in TX: 0xb42abf0586a4f518a733dd89a58750e4c040aec4892eea5b6be70ea83d9e7ddf at block 2026-03-25T15:00:37.285254900', '2026-03-25 15:00:37.000000', '2026-03-25 15:00:37.000000', NULL),
-(518, 'KN-2730902', 100, 20, 'KN-2730902', NULL, '2026-03-25 15:00:37.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-03-25 15:00:37.000000', '2028-03-25 23:59:59.000000', NULL, '0x8733a96459c71fba4233eacfb25fa27b3249684521d6c3ec554d343c6cfa8d24,0x39a0a10b3e74b73008bfd1e4b6b3cdfec49a11e7d1be6417143fe75cba97cc9d,0xfa893afbae4354a0f100de6dfea769c4272a98d5dab1a86d12df4566cf24a8f7', b'1', '\n[Blockchain] Registered in TX: 0xb42abf0586a4f518a733dd89a58750e4c040aec4892eea5b6be70ea83d9e7ddf at block 2026-03-25T15:00:37.285254900', '2026-03-25 15:00:37.000000', '2026-03-25 15:00:37.000000', NULL),
-(519, 'KN-7423970', 100, 20, 'KN-7423970', NULL, '2026-03-25 15:00:37.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-03-25 15:00:37.000000', '2028-03-25 23:59:59.000000', NULL, '0x3802c7ed14eb133ef4732e77b0aab14787d0e8b84a90d82ec4bc21453c417748,0x12f15b4fbbeb55d5acbc9894ae010c815e5b9460c1e07677ca2814b7c2764f71,0xfa893afbae4354a0f100de6dfea769c4272a98d5dab1a86d12df4566cf24a8f7', b'1', '\n[Blockchain] Registered in TX: 0xb42abf0586a4f518a733dd89a58750e4c040aec4892eea5b6be70ea83d9e7ddf at block 2026-03-25T15:00:37.290260400', '2026-03-25 15:00:37.000000', '2026-03-25 15:00:37.000000', NULL),
-(520, 'KN-6141035', 100, 20, 'KN-6141035', NULL, '2026-03-25 15:00:37.000000', 'MANUFACTURED', NULL, 'MANUFACTURER', '2026-03-25 15:00:37.000000', '2028-03-25 23:59:59.000000', NULL, '0x4a298a21cb086b5f63481a9f4d20f5d6a9b203af3c26cb7446b401b3b9e93890,0x12f15b4fbbeb55d5acbc9894ae010c815e5b9460c1e07677ca2814b7c2764f71,0xfa893afbae4354a0f100de6dfea769c4272a98d5dab1a86d12df4566cf24a8f7', b'1', '\n[Blockchain] Registered in TX: 0xb42abf0586a4f518a733dd89a58750e4c040aec4892eea5b6be70ea83d9e7ddf at block 2026-03-25T15:00:37.290260400', '2026-03-25 15:00:37.000000', '2026-03-25 15:00:37.000000', NULL);
-
--- --------------------------------------------------------
-
---
--- Cấu trúc bảng cho bảng `product_item_movements`
---
-
+DROP TABLE IF EXISTS `product_item_movements`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `product_item_movements` (
-  `id` bigint(20) NOT NULL,
-  `item_id` bigint(20) NOT NULL COMMENT 'FK to product_items',
-  `batch_id` bigint(20) NOT NULL COMMENT 'Denormalized để query nhanh theo lô',
-  `movement_type` enum('MANUFACTURE','TRANSFER','SHIP','RECEIVE','SALE','RETURN','RECALL','DAMAGE','EXPIRE') NOT NULL COMMENT 'Loại di chuyển/sự kiện',
-  `from_company_id` bigint(20) DEFAULT NULL COMMENT 'Từ công ty nào (NULL nếu MANUFACTURE)',
-  `from_company_type` enum('MANUFACTURER','DISTRIBUTOR','PHARMACY','CONSUMER') DEFAULT NULL,
-  `from_company_name` varchar(255) DEFAULT NULL COMMENT 'Denormalized cho hiển thị',
-  `from_address_detail` text DEFAULT NULL,
-  `to_company_id` bigint(20) NOT NULL COMMENT 'Đến công ty nào',
-  `to_company_type` enum('MANUFACTURER','DISTRIBUTOR','PHARMACY','CONSUMER') NOT NULL,
-  `to_company_name` varchar(255) DEFAULT NULL COMMENT 'Denormalized cho hiển thị',
-  `to_address_detail` text DEFAULT NULL,
-  `shipment_id` bigint(20) DEFAULT NULL COMMENT 'FK to drug_shipments (nếu có)',
-  `related_transaction_id` varchar(100) DEFAULT NULL COMMENT 'Mã đơn hàng/giao dịch',
-  `movement_timestamp` datetime(6) NOT NULL DEFAULT current_timestamp(6),
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `item_id` bigint NOT NULL COMMENT 'FK to product_items',
+  `batch_id` bigint NOT NULL COMMENT 'Denormalized để query nhanh theo lô',
+  `movement_type` enum('MANUFACTURE','TRANSFER','SHIP','RECEIVE','SALE','RETURN','RECALL','DAMAGE','EXPIRE') COLLATE utf8mb4_general_ci NOT NULL COMMENT 'Loại di chuyển/sự kiện',
+  `from_company_id` bigint DEFAULT NULL COMMENT 'Từ công ty nào (NULL nếu MANUFACTURE)',
+  `from_company_type` enum('MANUFACTURER','DISTRIBUTOR','PHARMACY','CONSUMER') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `from_company_name` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT 'Denormalized cho hiển thị',
+  `from_address_detail` text COLLATE utf8mb4_general_ci,
+  `to_company_id` bigint NOT NULL COMMENT 'Đến công ty nào',
+  `to_company_type` enum('MANUFACTURER','DISTRIBUTOR','PHARMACY','CONSUMER') COLLATE utf8mb4_general_ci NOT NULL,
+  `to_company_name` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT 'Denormalized cho hiển thị',
+  `to_address_detail` text COLLATE utf8mb4_general_ci,
+  `shipment_id` bigint DEFAULT NULL COMMENT 'FK to drug_shipments (nếu có)',
+  `related_transaction_id` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT 'Mã đơn hàng/giao dịch',
+  `movement_timestamp` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   `location_lat` decimal(10,7) DEFAULT NULL COMMENT 'GPS latitude',
   `location_lng` decimal(10,7) DEFAULT NULL COMMENT 'GPS longitude',
-  `verified_by` varchar(100) DEFAULT NULL COMMENT 'User thực hiện',
-  `verification_method` enum('QR_SCAN','MANUAL','AUTO') DEFAULT 'AUTO',
-  `blockchain_tx_hash` varchar(66) DEFAULT NULL,
-  `blockchain_block_number` bigint(20) DEFAULT NULL,
+  `verified_by` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT 'User thực hiện',
+  `verification_method` enum('QR_SCAN','MANUAL','AUTO') COLLATE utf8mb4_general_ci DEFAULT 'AUTO',
+  `blockchain_tx_hash` varchar(66) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `blockchain_block_number` bigint DEFAULT NULL,
   `is_blockchain_synced` bit(1) NOT NULL DEFAULT b'0',
-  `notes` text DEFAULT NULL,
-  `created_at` datetime(6) NOT NULL DEFAULT current_timestamp(6)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Lịch sử di chuyển của từng sản phẩm (audit trail)';
+  `notes` text COLLATE utf8mb4_general_ci,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `idx_item_id` (`item_id`),
+  KEY `idx_batch_id` (`batch_id`),
+  KEY `idx_movement_timestamp` (`movement_timestamp`),
+  KEY `idx_item_timestamp` (`item_id`,`movement_timestamp`),
+  KEY `idx_from_company` (`from_company_id`,`movement_type`),
+  KEY `idx_to_company` (`to_company_id`,`movement_type`),
+  KEY `idx_shipment` (`shipment_id`),
+  KEY `idx_movement_type` (`movement_type`),
+  CONSTRAINT `fk_movements_batch` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`) ON UPDATE CASCADE,
+  CONSTRAINT `fk_movements_item` FOREIGN KEY (`item_id`) REFERENCES `product_items` (`id`) ON UPDATE CASCADE,
+  CONSTRAINT `fk_movements_shipment` FOREIGN KEY (`shipment_id`) REFERENCES `drug_shipments` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB AUTO_INCREMENT=894 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Lịch sử di chuyển của từng sản phẩm (audit trail)';
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `product_item_movements`
+-- Dumping data for table `product_item_movements`
 --
 
-INSERT INTO `product_item_movements` (`id`, `item_id`, `batch_id`, `movement_type`, `from_company_id`, `from_company_type`, `from_company_name`, `from_address_detail`, `to_company_id`, `to_company_type`, `to_company_name`, `to_address_detail`, `shipment_id`, `related_transaction_id`, `movement_timestamp`, `location_lat`, `location_lng`, `verified_by`, `verification_method`, `blockchain_tx_hash`, `blockchain_block_number`, `is_blockchain_synced`, `notes`, `created_at`) VALUES
-(485, 500, 96, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-02-26 20:49:58.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-02-26 20:49:58.000000'),
-(486, 501, 96, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-02-26 20:49:58.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-02-26 20:49:58.000000'),
-(487, 502, 96, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-02-26 20:49:58.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-02-26 20:49:58.000000'),
-(488, 503, 96, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-02-26 20:49:58.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-02-26 20:49:58.000000'),
-(489, 504, 96, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-02-26 20:49:58.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-02-26 20:49:58.000000'),
-(490, 500, 96, 'SALE', 1, 'PHARMACY', NULL, NULL, 1, 'CONSUMER', 'Khach hang', NULL, NULL, NULL, '2026-02-26 21:29:22.000000', NULL, NULL, NULL, 'QR_SCAN', NULL, NULL, b'0', 'Counter sale at Hiệu thuốc An Khang', '2026-02-26 21:29:22.000000'),
-(491, 501, 96, 'SALE', NULL, 'MANUFACTURER', 'MANUFACTURER', NULL, 1, 'CONSUMER', 'Nguoi tieu dung', NULL, NULL, NULL, '2026-02-27 09:33:15.000000', NULL, NULL, NULL, 'QR_SCAN', NULL, NULL, b'0', 'Dispensed to consumer', '2026-02-27 09:33:15.000000'),
-(492, 503, 96, 'DAMAGE', 1, 'PHARMACY', NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-03-01 22:12:47.000000', NULL, NULL, NULL, 'QR_SCAN', NULL, NULL, b'0', 'Damaged at Pharmacy. Reason: Bị hỏng vỡ hộp. Image: http://10.10.33.186:8080/uploads/40c03469-4470-470d-a23a-023c8767a96c.jpg', '2026-03-01 22:12:47.000000'),
-(493, 505, 97, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-03-09 07:55:37.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-03-09 07:55:37.000000'),
-(494, 506, 97, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-03-09 07:55:37.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-03-09 07:55:37.000000'),
-(495, 507, 97, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-03-09 07:55:37.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-03-09 07:55:37.000000'),
-(496, 508, 97, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-03-09 07:55:37.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-03-09 07:55:37.000000'),
-(497, 509, 97, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-03-09 07:55:37.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-03-09 07:55:37.000000'),
-(498, 510, 98, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-03-09 12:19:01.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-03-09 12:19:01.000000'),
-(499, 511, 98, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-03-09 12:19:01.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-03-09 12:19:01.000000'),
-(500, 512, 98, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-03-09 12:19:01.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-03-09 12:19:01.000000'),
-(501, 513, 98, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-03-09 12:19:01.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-03-09 12:19:01.000000'),
-(502, 514, 98, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-03-09 12:19:01.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-03-09 12:19:01.000000'),
-(503, 515, 99, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-03-25 14:47:07.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-03-25 14:47:07.000000'),
-(504, 516, 100, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-03-25 15:00:37.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-03-25 15:00:37.000000'),
-(505, 517, 100, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-03-25 15:00:37.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-03-25 15:00:37.000000'),
-(506, 518, 100, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-03-25 15:00:37.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-03-25 15:00:37.000000'),
-(507, 519, 100, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-03-25 15:00:37.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-03-25 15:00:37.000000'),
-(508, 520, 100, 'MANUFACTURE', NULL, NULL, NULL, NULL, 1, 'MANUFACTURER', 'Dược Hậu Giang', NULL, NULL, NULL, '2026-03-25 15:00:37.000000', NULL, NULL, NULL, 'AUTO', NULL, NULL, b'0', 'Item manufactured', '2026-03-25 15:00:37.000000');
-
--- --------------------------------------------------------
+LOCK TABLES `product_item_movements` WRITE;
+/*!40000 ALTER TABLE `product_item_movements` DISABLE KEYS */;
+INSERT INTO `product_item_movements` VALUES (485,500,96,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-02-26 20:49:58.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-02-26 20:49:58.000000'),(486,501,96,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-02-26 20:49:58.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-02-26 20:49:58.000000'),(487,502,96,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-02-26 20:49:58.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-02-26 20:49:58.000000'),(488,503,96,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-02-26 20:49:58.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-02-26 20:49:58.000000'),(489,504,96,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-02-26 20:49:58.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-02-26 20:49:58.000000'),(490,500,96,'SALE',1,'PHARMACY',NULL,NULL,1,'CONSUMER','Khach hang',NULL,NULL,NULL,'2026-02-26 21:29:22.000000',NULL,NULL,NULL,'QR_SCAN',NULL,NULL,_binary '\0','Counter sale at Hiệu thuốc An Khang','2026-02-26 21:29:22.000000'),(491,501,96,'SALE',NULL,'MANUFACTURER','MANUFACTURER',NULL,1,'CONSUMER','Nguoi tieu dung',NULL,NULL,NULL,'2026-02-27 09:33:15.000000',NULL,NULL,NULL,'QR_SCAN',NULL,NULL,_binary '\0','Dispensed to consumer','2026-02-27 09:33:15.000000'),(492,503,96,'DAMAGE',1,'PHARMACY',NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-03-01 22:12:47.000000',NULL,NULL,NULL,'QR_SCAN',NULL,NULL,_binary '\0','Damaged at Pharmacy. Reason: Bị hỏng vỡ hộp. Image: http://10.10.33.186:8080/uploads/40c03469-4470-470d-a23a-023c8767a96c.jpg','2026-03-01 22:12:47.000000'),(493,505,97,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-03-09 07:55:37.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-03-09 07:55:37.000000'),(494,506,97,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-03-09 07:55:37.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-03-09 07:55:37.000000'),(495,507,97,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-03-09 07:55:37.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-03-09 07:55:37.000000'),(496,508,97,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-03-09 07:55:37.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-03-09 07:55:37.000000'),(497,509,97,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-03-09 07:55:37.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-03-09 07:55:37.000000'),(498,510,98,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-03-09 12:19:01.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-03-09 12:19:01.000000'),(499,511,98,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-03-09 12:19:01.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-03-09 12:19:01.000000'),(500,512,98,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-03-09 12:19:01.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-03-09 12:19:01.000000'),(501,513,98,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-03-09 12:19:01.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-03-09 12:19:01.000000'),(502,514,98,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-03-09 12:19:01.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-03-09 12:19:01.000000'),(503,515,99,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-03-25 14:47:07.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-03-25 14:47:07.000000'),(504,516,100,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-03-25 15:00:37.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-03-25 15:00:37.000000'),(505,517,100,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-03-25 15:00:37.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-03-25 15:00:37.000000'),(506,518,100,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-03-25 15:00:37.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-03-25 15:00:37.000000'),(507,519,100,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-03-25 15:00:37.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-03-25 15:00:37.000000'),(508,520,100,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-03-25 15:00:37.000000',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-03-25 15:00:37.000000'),(509,521,101,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 12:54:05.753728',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 12:54:05.833219'),(510,522,102,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 21:20:54.192535',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 21:20:54.239556'),(511,523,102,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 21:20:54.192535',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 21:20:54.248471'),(512,524,103,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:09:14.468677',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:09:14.559728'),(513,525,103,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:09:14.468677',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:09:14.567521'),(514,526,103,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:09:14.468677',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:09:14.569050'),(515,527,103,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:09:14.468677',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:09:14.570338'),(516,528,103,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:09:14.468677',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:09:14.571339'),(517,529,103,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:09:14.468677',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:09:14.572359'),(518,530,103,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:09:14.468677',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:09:14.573838'),(519,531,103,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:09:14.468677',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:09:14.574961'),(520,532,103,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:09:14.468677',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:09:14.575958'),(521,533,103,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:09:14.468677',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:09:14.576945'),(522,534,104,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:13:42.922299',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:13:43.003737'),(523,535,104,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:13:42.922299',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:13:43.008128'),(524,536,104,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:13:42.922299',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:13:43.010028'),(525,537,104,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:13:42.922299',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:13:43.012501'),(526,538,104,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:13:42.922299',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:13:43.014016'),(527,539,104,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:13:42.922299',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:13:43.015239'),(528,540,104,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:13:42.922299',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:13:43.018173'),(529,541,104,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:13:42.922299',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:13:43.020368'),(530,542,105,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:20:54.695352',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:20:54.743572'),(531,543,105,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:20:54.695352',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:20:54.747243'),(532,544,105,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:20:54.695352',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:20:54.748253'),(533,545,105,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:20:54.695352',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:20:54.749272'),(534,546,105,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:20:54.695352',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:20:54.750278'),(535,547,105,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:20:54.695352',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:20:54.751338'),(536,548,105,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:20:54.695352',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:20:54.752334'),(537,549,105,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:20:54.695352',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:20:54.753375'),(538,550,105,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:20:54.695352',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:20:54.754246'),(539,551,105,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-27 23:20:54.695352',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-27 23:20:54.755227'),(540,552,106,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-28 00:10:18.009168',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-28 00:10:18.058895'),(541,553,106,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-28 00:10:18.009168',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-28 00:10:18.066014'),(542,554,107,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 09:47:28.653848',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 09:47:28.744368'),(543,555,107,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 09:47:28.653848',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 09:47:28.755313'),(544,556,107,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 09:47:28.653848',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 09:47:28.756569'),(545,557,107,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 09:47:28.653848',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 09:47:28.757686'),(546,558,107,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 09:47:28.653848',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 09:47:28.758696'),(547,559,107,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 09:47:28.653848',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 09:47:28.759697'),(548,560,107,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 09:47:28.653848',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 09:47:28.760705'),(549,561,107,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 09:47:28.653848',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 09:47:28.761692'),(550,562,107,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 09:47:28.653848',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 09:47:28.762740'),(551,563,107,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 09:47:28.653848',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 09:47:28.763729'),(552,564,108,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:41:39.827333',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:41:39.981964'),(553,565,108,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:41:39.827333',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:41:39.990299'),(554,566,108,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:41:39.827333',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:41:39.992868'),(555,567,108,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:41:39.827333',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:41:39.996454'),(556,568,108,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:41:39.827333',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:41:39.999727'),(557,569,108,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:41:39.827333',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:41:40.004194'),(558,570,108,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:41:39.827333',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:41:40.007538'),(559,571,108,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:41:39.827333',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:41:40.011214'),(560,572,108,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:41:39.827333',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:41:40.014883'),(561,573,108,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:41:39.827333',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:41:40.018648'),(562,574,108,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:41:39.827333',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:41:40.024272'),(563,575,108,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:41:39.827333',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:41:40.027588'),(564,1,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.494066'),(565,2,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.507853'),(566,3,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.510467'),(567,4,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.513189'),(568,5,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.516126'),(569,6,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.519060'),(570,7,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.521335'),(571,8,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.525336'),(572,9,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.531851'),(573,10,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.537696'),(574,11,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.544209'),(575,12,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.547975'),(576,13,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.551040'),(577,14,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.553919'),(578,15,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.558295'),(579,16,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.562284'),(580,17,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.565964'),(581,18,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.569693'),(582,19,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.573504'),(583,20,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:51:50.186858',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:51:50.576539'),(584,1,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:59:34.075779',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:59:34.327289'),(585,2,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:59:34.075779',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:59:34.343864'),(586,3,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:59:34.075779',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:59:34.348571'),(587,4,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:59:34.075779',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:59:34.352809'),(588,5,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:59:34.075779',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:59:34.357015'),(589,6,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:59:34.075779',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:59:34.361722'),(590,7,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:59:34.075779',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:59:34.365652'),(591,8,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:59:34.075779',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:59:34.370168'),(592,9,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:59:34.075779',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:59:34.373671'),(593,10,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:59:34.075779',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:59:34.379473'),(594,11,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:59:34.075779',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:59:34.383969'),(595,12,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:59:34.075779',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:59:34.389184'),(596,13,1,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-29 10:59:34.075779',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-29 10:59:34.393286'),(597,14,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.324366'),(598,15,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.363695'),(599,16,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.368591'),(600,17,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.371987'),(601,18,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.376667'),(602,19,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.384621'),(603,20,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.387938'),(604,21,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.392553'),(605,22,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.398140'),(606,23,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.408777'),(607,24,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.415037'),(608,25,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.419543'),(609,26,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.422388'),(610,27,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.427990'),(611,28,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.432583'),(612,29,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.434905'),(613,30,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.437211'),(614,31,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.439382'),(615,32,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.442125'),(616,33,2,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-04-30 22:25:48.896834',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-04-30 22:25:49.446581'),(617,34,3,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:25:56.053899',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:25:56.110677'),(618,35,3,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:25:56.053899',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:25:56.117957'),(619,36,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.243638'),(620,37,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.248190'),(621,38,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.250022'),(622,39,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.254972'),(623,40,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.258112'),(624,41,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.261385'),(625,42,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.264099'),(626,43,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.266871'),(627,44,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.269123'),(628,45,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.270687'),(629,46,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.272035'),(630,47,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.273923'),(631,48,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.275688'),(632,49,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.277488'),(633,50,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.279616'),(634,51,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.281136'),(635,52,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.282267'),(636,53,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.283431'),(637,54,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.284694'),(638,55,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.286137'),(639,56,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.287451'),(640,57,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.288818'),(641,58,4,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-01 23:41:10.132871',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-01 23:41:10.290167'),(642,59,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.398476'),(643,60,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.403081'),(644,61,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.405109'),(645,62,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.406986'),(646,63,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.408810'),(647,64,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.410893'),(648,65,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.412907'),(649,66,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.414896'),(650,67,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.416884'),(651,68,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.419082'),(652,69,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.421194'),(653,70,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.423467'),(654,71,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.425642'),(655,72,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.427677'),(656,73,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.429629'),(657,74,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.431243'),(658,75,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.433317'),(659,76,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.435216'),(660,77,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.436917'),(661,78,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.438833'),(662,79,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.441182'),(663,80,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.443809'),(664,81,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.445942'),(665,82,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.447775'),(666,83,5,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:04:30.245264',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:04:30.449580'),(667,84,6,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:08:15.341014',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:08:15.403766'),(668,85,6,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:08:15.341014',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:08:15.409097'),(669,86,6,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:08:15.341014',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:08:15.411723'),(670,87,6,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:08:15.341014',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:08:15.413435'),(671,88,6,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:08:15.341014',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:08:15.414986'),(672,89,6,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:08:15.341014',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:08:15.417347'),(673,90,6,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:08:15.341014',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:08:15.419412'),(674,91,6,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:08:15.341014',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:08:15.421254'),(675,92,6,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:08:15.341014',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:08:15.423186'),(676,93,6,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 00:08:15.341014',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 00:08:15.425097'),(677,94,7,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:11:59.830416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:11:59.925529'),(678,95,7,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:11:59.830416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:11:59.930187'),(679,96,7,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:11:59.830416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:11:59.931769'),(680,97,7,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:11:59.830416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:11:59.933239'),(681,98,7,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:11:59.830416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:11:59.934892'),(682,99,7,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:11:59.830416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:11:59.936366'),(683,100,7,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:11:59.830416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:11:59.937835'),(684,101,7,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:11:59.830416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:11:59.939042'),(685,102,7,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:11:59.830416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:11:59.940373'),(686,103,7,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:11:59.830416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:11:59.941477'),(687,104,7,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:11:59.830416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:11:59.942897'),(688,105,7,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:11:59.830416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:11:59.944159'),(689,106,7,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:11:59.830416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:11:59.945272'),(690,107,7,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:11:59.830416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:11:59.946463'),(691,108,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.600347'),(692,109,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.609241'),(693,110,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.615013'),(694,111,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.618155'),(695,112,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.620750'),(696,113,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.622991'),(697,114,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.624945'),(698,115,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.627610'),(699,116,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.631015'),(700,117,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.634163'),(701,118,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.637418'),(702,119,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.641543'),(703,120,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.645361'),(704,121,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.648072'),(705,122,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.650398'),(706,123,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.653369'),(707,124,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.656234'),(708,125,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.659372'),(709,126,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.662135'),(710,127,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.664203'),(711,128,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.667747'),(712,129,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.671184'),(713,130,8,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:22:22.398387',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:22:22.676261'),(714,131,29,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:36:42.876672',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:36:42.969820'),(715,132,29,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:36:42.876672',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:36:42.981322'),(716,133,29,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:36:42.876672',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:36:42.984691'),(717,134,29,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:36:42.876672',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:36:42.988579'),(718,135,29,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:36:42.876672',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:36:42.991506'),(719,136,30,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:37:03.126826',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:37:03.173087'),(720,137,30,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:37:03.126826',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:37:03.176189'),(721,138,30,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:37:03.126826',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:37:03.179084'),(722,139,30,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:37:03.126826',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:37:03.181340'),(723,140,30,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:37:03.126826',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:37:03.184717'),(724,141,31,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:37:39.905130',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:37:39.952425'),(725,142,31,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:37:39.905130',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:37:39.956628'),(726,143,31,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:37:39.905130',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:37:39.959805'),(727,144,31,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:37:39.905130',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:37:39.963790'),(728,145,31,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:37:39.905130',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:37:39.966443'),(729,146,32,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:38:16.558918',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:38:16.608878'),(730,147,32,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:38:16.558918',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:38:16.612653'),(731,148,32,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:38:16.558918',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:38:16.615158'),(732,149,32,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:38:16.558918',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:38:16.617419'),(733,150,32,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:38:16.558918',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:38:16.619764'),(734,151,33,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:38:39.236416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:38:39.278941'),(735,152,33,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:38:39.236416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:38:39.281772'),(736,153,33,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:38:39.236416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:38:39.284449'),(737,154,33,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:38:39.236416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:38:39.287228'),(738,155,33,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:38:39.236416',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:38:39.290474'),(739,156,34,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:39:15.610764',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:39:15.657887'),(740,157,34,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:39:15.610764',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:39:15.660052'),(741,158,34,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:39:15.610764',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:39:15.662819'),(742,159,34,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:39:15.610764',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:39:15.666022'),(743,160,34,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:39:15.610764',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:39:15.669035'),(744,161,35,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:39:39.422536',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:39:39.468482'),(745,162,35,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:39:39.422536',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:39:39.471357'),(746,163,35,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:39:39.422536',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:39:39.473257'),(747,164,35,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:39:39.422536',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:39:39.475101'),(748,165,35,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:39:39.422536',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:39:39.477978'),(749,166,36,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:40:03.410397',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:40:03.448087'),(750,167,36,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:40:03.410397',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:40:03.451984'),(751,168,36,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:40:03.410397',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:40:03.454369'),(752,169,36,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:40:03.410397',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:40:03.457108'),(753,170,36,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:40:03.410397',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:40:03.459657'),(754,171,37,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:40:27.442210',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:40:27.490286'),(755,172,37,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:40:27.442210',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:40:27.494454'),(756,173,37,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:40:27.442210',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:40:27.497244'),(757,174,37,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:40:27.442210',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:40:27.500294'),(758,175,37,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:40:27.442210',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:40:27.502589'),(759,176,38,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:40:52.420769',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:40:52.467222'),(760,177,38,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:40:52.420769',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:40:52.472125'),(761,178,38,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:40:52.420769',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:40:52.474253'),(762,179,38,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:40:52.420769',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:40:52.475785'),(763,180,38,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:40:52.420769',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:40:52.478586'),(764,181,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.654340'),(765,182,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.658123'),(766,183,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.661080'),(767,184,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.663843'),(768,185,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.668326'),(769,186,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.671080'),(770,187,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.673742'),(771,188,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.676792'),(772,189,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.681287'),(773,190,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.684045'),(774,191,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.687056'),(775,192,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.689908'),(776,193,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.693505'),(777,194,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.699387'),(778,195,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.701142'),(779,196,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.702674'),(780,197,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.703984'),(781,198,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.705167'),(782,199,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.706791'),(783,200,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.707909'),(784,201,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.709801'),(785,202,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.714138'),(786,203,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.717220'),(787,204,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.720155'),(788,205,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.723108'),(789,206,39,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-02 22:43:21.475473',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-02 22:43:21.726157'),(790,207,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.483918'),(791,208,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.505818'),(792,209,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.507630'),(793,210,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.508662'),(794,211,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.509687'),(795,212,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.510685'),(796,213,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.511670'),(797,214,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.512695'),(798,215,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.513720'),(799,216,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.514527'),(800,217,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.515425'),(801,218,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.516391'),(802,219,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.517403'),(803,220,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.518293'),(804,221,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.519338'),(805,222,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.520336'),(806,223,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.521245'),(807,224,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.522077'),(808,225,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.522967'),(809,226,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.523856'),(810,227,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.524694'),(811,228,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.525690'),(812,229,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.526697'),(813,230,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.527563'),(814,231,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.528574'),(815,232,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.530049'),(816,233,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.531305'),(817,234,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.532469'),(818,235,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.534469'),(819,236,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.535612'),(820,237,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.536479'),(821,238,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.537345'),(822,239,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.538158'),(823,240,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.538956'),(824,241,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.541474'),(825,242,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.542458'),(826,243,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.543387'),(827,244,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.544292'),(828,245,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.546906'),(829,246,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.547849'),(830,247,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.548828'),(831,248,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.549622'),(832,249,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.550367'),(833,250,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.551425'),(834,251,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.553033'),(835,252,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.554215'),(836,253,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.555180'),(837,254,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.556522'),(838,255,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.557885'),(839,256,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.559971'),(840,257,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.561134'),(841,258,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.561962'),(842,259,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.562771'),(843,260,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.563682'),(844,261,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.564492'),(845,262,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.565316'),(846,263,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.566218'),(847,264,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.568615'),(848,265,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.570239'),(849,266,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.572624'),(850,267,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.574607'),(851,268,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.575778'),(852,269,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.577341'),(853,270,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.578660'),(854,271,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.579861'),(855,272,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.581192'),(856,273,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.585023'),(857,274,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.588068'),(858,275,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.589402'),(859,276,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.590403'),(860,277,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.591853'),(861,278,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.593656'),(862,279,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.594537'),(863,280,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.595335'),(864,281,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.596248'),(865,282,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.597072'),(866,283,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.598289'),(867,284,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.600121'),(868,285,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.601896'),(869,286,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.603966'),(870,287,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.605702'),(871,288,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.606847'),(872,289,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.607819'),(873,290,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.608819'),(874,291,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.609938'),(875,292,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.611187'),(876,293,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.612264'),(877,294,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.613515'),(878,295,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.614503'),(879,296,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.616031'),(880,297,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.617683'),(881,298,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.618667'),(882,299,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.619609'),(883,300,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.620770'),(884,301,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.621728'),(885,302,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.622608'),(886,303,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.624123'),(887,304,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.625180'),(888,305,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.626017'),(889,306,40,'MANUFACTURE',NULL,NULL,NULL,NULL,1,'MANUFACTURER','Dược Hậu Giang',NULL,NULL,NULL,'2026-05-23 14:24:11.172560',NULL,NULL,NULL,'AUTO',NULL,NULL,_binary '\0','Item manufactured','2026-05-23 14:24:11.626854'),(890,35,3,'SALE',NULL,'MANUFACTURER','MANUFACTURER',NULL,1,'CONSUMER','Nguoi tieu dung','Khach hang: ',NULL,NULL,'2026-05-25 20:01:16.590063',NULL,NULL,NULL,'QR_SCAN',NULL,NULL,_binary '\0','Dispensed to consumer','2026-05-25 20:01:16.592740'),(891,61,5,'SALE',NULL,'MANUFACTURER','MANUFACTURER',NULL,1,'CONSUMER','Nguoi tieu dung','Khach hang: ',NULL,NULL,'2026-05-25 20:03:15.873077',NULL,NULL,NULL,'QR_SCAN',NULL,NULL,_binary '\0','Dispensed to consumer','2026-05-25 20:03:15.874028'),(892,215,40,'SALE',NULL,'MANUFACTURER','MANUFACTURER',NULL,1,'CONSUMER','Nguoi tieu dung','Khach hang: ',NULL,NULL,'2026-05-25 20:05:13.925259',NULL,NULL,NULL,'QR_SCAN',NULL,NULL,_binary '\0','Dispensed to consumer','2026-05-25 20:05:13.926166'),(893,218,40,'SALE',NULL,'MANUFACTURER','MANUFACTURER',NULL,1,'CONSUMER','Nguoi tieu dung','Khach hang: ',NULL,NULL,'2026-05-25 20:13:49.858307',NULL,NULL,NULL,'QR_SCAN',NULL,NULL,_binary '\0','Dispensed to consumer','2026-05-25 20:13:49.865273');
+/*!40000 ALTER TABLE `product_item_movements` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc bảng cho bảng `product_item_verifications`
+-- Table structure for table `product_item_verifications`
 --
 
+DROP TABLE IF EXISTS `product_item_verifications`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `product_item_verifications` (
-  `id` bigint(20) NOT NULL,
-  `item_id` bigint(20) NOT NULL COMMENT 'FK to product_items',
-  `scanner_type` enum('MANUFACTURER','DISTRIBUTOR','PHARMACY','CONSUMER','INSPECTOR','ANONYMOUS') NOT NULL COMMENT 'Ai quét QR',
-  `scanner_id` varchar(100) DEFAULT NULL COMMENT 'User ID (nếu đăng nhập)',
-  `scanner_name` varchar(255) DEFAULT NULL,
-  `scanner_device_info` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Device info: OS, browser, app version' CHECK (json_valid(`scanner_device_info`)),
-  `scanner_location` varchar(500) DEFAULT NULL COMMENT 'Địa điểm quét',
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `item_id` bigint NOT NULL COMMENT 'FK to product_items',
+  `scanner_type` enum('MANUFACTURER','DISTRIBUTOR','PHARMACY','CONSUMER','INSPECTOR','ANONYMOUS') COLLATE utf8mb4_general_ci NOT NULL COMMENT 'Ai quét QR',
+  `scanner_id` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT 'User ID (nếu đăng nhập)',
+  `scanner_name` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `scanner_device_info` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin COMMENT 'Device info: OS, browser, app version',
+  `scanner_location` varchar(500) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT 'Địa điểm quét',
   `location_lat` decimal(10,7) DEFAULT NULL,
   `location_lng` decimal(10,7) DEFAULT NULL,
-  `verification_result` enum('AUTHENTIC','SUSPICIOUS','COUNTERFEIT','EXPIRED','RECALLED') NOT NULL DEFAULT 'AUTHENTIC',
-  `verification_details` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT 'Chi tiết xác thực' CHECK (json_valid(`verification_details`)),
-  `ip_address` varchar(45) DEFAULT NULL,
-  `user_agent` text DEFAULT NULL,
-  `scan_timestamp` datetime(6) NOT NULL DEFAULT current_timestamp(6),
+  `verification_result` enum('AUTHENTIC','SUSPICIOUS','COUNTERFEIT','EXPIRED','RECALLED') COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'AUTHENTIC',
+  `verification_details` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin COMMENT 'Chi tiết xác thực',
+  `ip_address` varchar(45) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `user_agent` text COLLATE utf8mb4_general_ci,
+  `scan_timestamp` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   `blockchain_verified` bit(1) DEFAULT b'0',
-  `blockchain_query_time_ms` int(11) DEFAULT NULL COMMENT 'Thời gian query blockchain',
-  `notes` text DEFAULT NULL,
-  `created_at` datetime(6) NOT NULL DEFAULT current_timestamp(6)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Lịch sử quét QR code (security & analytics)';
+  `blockchain_query_time_ms` int DEFAULT NULL COMMENT 'Thời gian query blockchain',
+  `notes` text COLLATE utf8mb4_general_ci,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `idx_item_id` (`item_id`),
+  KEY `idx_scan_timestamp` (`scan_timestamp`),
+  KEY `idx_scanner_type_time` (`scanner_type`,`scan_timestamp`),
+  KEY `idx_verification_result` (`verification_result`),
+  KEY `idx_scanner` (`scanner_id`,`scanner_type`),
+  KEY `idx_item_scanner` (`item_id`,`scanner_type`),
+  CONSTRAINT `fk_verifications_item` FOREIGN KEY (`item_id`) REFERENCES `product_items` (`id`) ON UPDATE CASCADE,
+  CONSTRAINT `product_item_verifications_chk_1` CHECK (json_valid(`scanner_device_info`)),
+  CONSTRAINT `product_item_verifications_chk_2` CHECK (json_valid(`verification_details`))
+) ENGINE=InnoDB AUTO_INCREMENT=219 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Lịch sử quét QR code (security & analytics)';
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `product_item_verifications`
+-- Dumping data for table `product_item_verifications`
 --
 
-INSERT INTO `product_item_verifications` (`id`, `item_id`, `scanner_type`, `scanner_id`, `scanner_name`, `scanner_device_info`, `scanner_location`, `location_lat`, `location_lng`, `verification_result`, `verification_details`, `ip_address`, `user_agent`, `scan_timestamp`, `blockchain_verified`, `blockchain_query_time_ms`, `notes`, `created_at`) VALUES
-(112, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-26 20:50:31.000000', b'1', NULL, NULL, '2026-02-26 20:50:31.000000'),
-(113, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-26 21:29:15.000000', b'1', NULL, NULL, '2026-02-26 21:29:15.000000'),
-(114, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-26 21:29:26.000000', b'1', NULL, NULL, '2026-02-26 21:29:26.000000'),
-(115, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-26 21:29:31.000000', b'1', NULL, NULL, '2026-02-26 21:29:31.000000'),
-(116, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-26 22:31:27.000000', b'1', NULL, NULL, '2026-02-26 22:31:27.000000'),
-(117, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-26 22:32:25.000000', b'1', NULL, NULL, '2026-02-26 22:32:25.000000'),
-(118, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-26 22:33:25.000000', b'1', NULL, NULL, '2026-02-26 22:33:25.000000'),
-(119, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-26 22:33:32.000000', b'1', NULL, NULL, '2026-02-26 22:33:32.000000'),
-(120, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:19:01.000000', b'1', NULL, NULL, '2026-02-27 00:19:01.000000'),
-(121, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:23:12.000000', b'1', NULL, NULL, '2026-02-27 00:23:12.000000'),
-(122, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:25:23.000000', b'1', NULL, NULL, '2026-02-27 00:25:23.000000'),
-(123, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:26:29.000000', b'1', NULL, NULL, '2026-02-27 00:26:29.000000'),
-(124, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:26:39.000000', b'1', NULL, NULL, '2026-02-27 00:26:39.000000'),
-(125, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:27:48.000000', b'1', NULL, NULL, '2026-02-27 00:27:48.000000'),
-(126, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:28:03.000000', b'1', NULL, NULL, '2026-02-27 00:28:03.000000'),
-(127, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:28:25.000000', b'1', NULL, NULL, '2026-02-27 00:28:25.000000'),
-(128, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:28:26.000000', b'1', NULL, NULL, '2026-02-27 00:28:26.000000'),
-(129, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:28:27.000000', b'1', NULL, NULL, '2026-02-27 00:28:27.000000'),
-(130, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:28:35.000000', b'1', NULL, NULL, '2026-02-27 00:28:35.000000'),
-(131, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:28:35.000000', b'1', NULL, NULL, '2026-02-27 00:28:35.000000'),
-(132, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:28:39.000000', b'1', NULL, NULL, '2026-02-27 00:28:39.000000'),
-(133, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:28:53.000000', b'1', NULL, NULL, '2026-02-27 00:28:53.000000'),
-(134, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:29:02.000000', b'1', NULL, NULL, '2026-02-27 00:29:02.000000'),
-(135, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:29:03.000000', b'1', NULL, NULL, '2026-02-27 00:29:03.000000'),
-(136, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:29:07.000000', b'1', NULL, NULL, '2026-02-27 00:29:07.000000'),
-(137, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:31:18.000000', b'1', NULL, NULL, '2026-02-27 00:31:18.000000'),
-(138, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:44:17.000000', b'1', NULL, NULL, '2026-02-27 00:44:17.000000'),
-(139, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:44:29.000000', b'1', NULL, NULL, '2026-02-27 00:44:29.000000'),
-(140, 503, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:44:39.000000', b'1', NULL, NULL, '2026-02-27 00:44:39.000000'),
-(141, 502, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:44:42.000000', b'1', NULL, NULL, '2026-02-27 00:44:42.000000'),
-(142, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:45:17.000000', b'1', NULL, NULL, '2026-02-27 00:45:17.000000'),
-(143, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:57:02.000000', b'1', NULL, NULL, '2026-02-27 00:57:02.000000'),
-(144, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:58:07.000000', b'1', NULL, NULL, '2026-02-27 00:58:07.000000'),
-(145, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:58:14.000000', b'1', NULL, NULL, '2026-02-27 00:58:14.000000'),
-(146, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:58:19.000000', b'1', NULL, NULL, '2026-02-27 00:58:19.000000'),
-(147, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:58:20.000000', b'1', NULL, NULL, '2026-02-27 00:58:20.000000'),
-(148, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:58:42.000000', b'1', NULL, NULL, '2026-02-27 00:58:42.000000'),
-(149, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 00:58:47.000000', b'1', NULL, NULL, '2026-02-27 00:58:47.000000'),
-(150, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 01:00:34.000000', b'1', NULL, NULL, '2026-02-27 01:00:34.000000'),
-(151, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 01:00:37.000000', b'1', NULL, NULL, '2026-02-27 01:00:37.000000'),
-(152, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 09:31:22.000000', b'1', NULL, NULL, '2026-02-27 09:31:22.000000'),
-(153, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 09:31:34.000000', b'1', NULL, NULL, '2026-02-27 09:31:34.000000'),
-(154, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 09:33:19.000000', b'1', NULL, NULL, '2026-02-27 09:33:19.000000'),
-(155, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 09:33:30.000000', b'1', NULL, NULL, '2026-02-27 09:33:30.000000'),
-(156, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 10:07:06.000000', b'1', NULL, NULL, '2026-02-27 10:07:06.000000'),
-(157, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 10:09:04.000000', b'1', NULL, NULL, '2026-02-27 10:09:04.000000'),
-(158, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 10:14:47.000000', b'1', NULL, NULL, '2026-02-27 10:14:47.000000'),
-(159, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 10:18:35.000000', b'1', NULL, NULL, '2026-02-27 10:18:35.000000'),
-(160, 502, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 10:20:33.000000', b'1', NULL, NULL, '2026-02-27 10:20:33.000000'),
-(161, 503, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 10:20:35.000000', b'1', NULL, NULL, '2026-02-27 10:20:35.000000'),
-(162, 502, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 10:20:39.000000', b'1', NULL, NULL, '2026-02-27 10:20:39.000000'),
-(163, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 10:20:41.000000', b'1', NULL, NULL, '2026-02-27 10:20:41.000000'),
-(164, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 10:20:55.000000', b'1', NULL, NULL, '2026-02-27 10:20:55.000000'),
-(165, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 10:21:31.000000', b'1', NULL, NULL, '2026-02-27 10:21:31.000000'),
-(166, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 10:49:12.000000', b'1', NULL, NULL, '2026-02-27 10:49:12.000000'),
-(167, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 11:04:05.000000', b'1', NULL, NULL, '2026-02-27 11:04:05.000000'),
-(168, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 11:04:12.000000', b'1', NULL, NULL, '2026-02-27 11:04:12.000000'),
-(169, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 11:30:41.000000', b'1', NULL, NULL, '2026-02-27 11:30:41.000000'),
-(170, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 11:30:52.000000', b'1', NULL, NULL, '2026-02-27 11:30:52.000000'),
-(171, 502, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 11:31:14.000000', b'1', NULL, NULL, '2026-02-27 11:31:14.000000'),
-(172, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 11:31:22.000000', b'1', NULL, NULL, '2026-02-27 11:31:22.000000'),
-(173, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 11:32:58.000000', b'1', NULL, NULL, '2026-02-27 11:32:58.000000'),
-(174, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 11:37:59.000000', b'1', NULL, NULL, '2026-02-27 11:37:59.000000'),
-(175, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 11:39:58.000000', b'1', NULL, NULL, '2026-02-27 11:39:58.000000'),
-(176, 502, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 11:40:02.000000', b'1', NULL, NULL, '2026-02-27 11:40:02.000000'),
-(177, 502, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 11:40:11.000000', b'1', NULL, NULL, '2026-02-27 11:40:11.000000'),
-(178, 502, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 11:40:19.000000', b'1', NULL, NULL, '2026-02-27 11:40:19.000000'),
-(179, 503, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 11:40:23.000000', b'1', NULL, NULL, '2026-02-27 11:40:23.000000'),
-(180, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 11:40:53.000000', b'1', NULL, NULL, '2026-02-27 11:40:53.000000'),
-(181, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 11:45:41.000000', b'1', NULL, NULL, '2026-02-27 11:45:41.000000'),
-(182, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 13:11:49.000000', b'1', NULL, NULL, '2026-02-27 13:11:49.000000'),
-(183, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 15:07:14.000000', b'1', NULL, NULL, '2026-02-27 15:07:14.000000'),
-(184, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-27 15:07:19.000000', b'1', NULL, NULL, '2026-02-27 15:07:19.000000'),
-(185, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-02-28 00:35:19.000000', b'1', NULL, NULL, '2026-02-28 00:35:19.000000'),
-(186, 503, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-01 21:14:41.000000', b'1', NULL, NULL, '2026-03-01 21:14:41.000000'),
-(187, 503, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-01 22:12:51.000000', b'1', NULL, NULL, '2026-03-01 22:12:51.000000'),
-(188, 503, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-01 22:12:56.000000', b'1', NULL, NULL, '2026-03-01 22:12:56.000000'),
-(189, 503, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-01 22:12:56.000000', b'1', NULL, NULL, '2026-03-01 22:12:56.000000'),
-(190, 503, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-01 22:19:58.000000', b'1', NULL, NULL, '2026-03-01 22:19:58.000000'),
-(191, 503, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-01 22:23:22.000000', b'1', NULL, NULL, '2026-03-01 22:23:22.000000'),
-(192, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-25 14:52:12.000000', b'1', NULL, NULL, '2026-03-25 14:52:12.000000'),
-(193, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-25 14:53:17.000000', b'1', NULL, NULL, '2026-03-25 14:53:17.000000'),
-(194, 502, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-25 14:53:24.000000', b'1', NULL, NULL, '2026-03-25 14:53:24.000000'),
-(195, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-25 14:53:28.000000', b'1', NULL, NULL, '2026-03-25 14:53:28.000000'),
-(196, 501, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-25 14:53:34.000000', b'1', NULL, NULL, '2026-03-25 14:53:34.000000'),
-(197, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-25 14:53:40.000000', b'1', NULL, NULL, '2026-03-25 14:53:40.000000'),
-(198, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-25 14:56:06.000000', b'1', NULL, NULL, '2026-03-25 14:56:06.000000'),
-(199, 500, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-25 15:02:05.000000', b'1', NULL, NULL, '2026-03-25 15:02:05.000000'),
-(200, 516, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-25 15:06:49.000000', b'1', NULL, NULL, '2026-03-25 15:06:49.000000'),
-(201, 515, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-25 15:06:55.000000', b'1', NULL, NULL, '2026-03-25 15:06:55.000000'),
-(202, 516, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-25 15:07:21.000000', b'1', NULL, NULL, '2026-03-25 15:07:21.000000'),
-(203, 510, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-25 15:07:46.000000', b'1', NULL, NULL, '2026-03-25 15:07:46.000000'),
-(204, 510, 'CONSUMER', NULL, NULL, NULL, NULL, NULL, NULL, 'AUTHENTIC', NULL, NULL, NULL, '2026-03-25 15:08:44.000000', b'1', NULL, NULL, '2026-03-25 15:08:44.000000');
-
--- --------------------------------------------------------
+LOCK TABLES `product_item_verifications` WRITE;
+/*!40000 ALTER TABLE `product_item_verifications` DISABLE KEYS */;
+INSERT INTO `product_item_verifications` VALUES (112,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-26 20:50:31.000000',_binary '',NULL,NULL,'2026-02-26 20:50:31.000000'),(113,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-26 21:29:15.000000',_binary '',NULL,NULL,'2026-02-26 21:29:15.000000'),(114,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-26 21:29:26.000000',_binary '',NULL,NULL,'2026-02-26 21:29:26.000000'),(115,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-26 21:29:31.000000',_binary '',NULL,NULL,'2026-02-26 21:29:31.000000'),(116,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-26 22:31:27.000000',_binary '',NULL,NULL,'2026-02-26 22:31:27.000000'),(117,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-26 22:32:25.000000',_binary '',NULL,NULL,'2026-02-26 22:32:25.000000'),(118,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-26 22:33:25.000000',_binary '',NULL,NULL,'2026-02-26 22:33:25.000000'),(119,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-26 22:33:32.000000',_binary '',NULL,NULL,'2026-02-26 22:33:32.000000'),(120,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:19:01.000000',_binary '',NULL,NULL,'2026-02-27 00:19:01.000000'),(121,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:23:12.000000',_binary '',NULL,NULL,'2026-02-27 00:23:12.000000'),(122,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:25:23.000000',_binary '',NULL,NULL,'2026-02-27 00:25:23.000000'),(123,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:26:29.000000',_binary '',NULL,NULL,'2026-02-27 00:26:29.000000'),(124,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:26:39.000000',_binary '',NULL,NULL,'2026-02-27 00:26:39.000000'),(125,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:27:48.000000',_binary '',NULL,NULL,'2026-02-27 00:27:48.000000'),(126,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:28:03.000000',_binary '',NULL,NULL,'2026-02-27 00:28:03.000000'),(127,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:28:25.000000',_binary '',NULL,NULL,'2026-02-27 00:28:25.000000'),(128,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:28:26.000000',_binary '',NULL,NULL,'2026-02-27 00:28:26.000000'),(129,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:28:27.000000',_binary '',NULL,NULL,'2026-02-27 00:28:27.000000'),(130,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:28:35.000000',_binary '',NULL,NULL,'2026-02-27 00:28:35.000000'),(131,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:28:35.000000',_binary '',NULL,NULL,'2026-02-27 00:28:35.000000'),(132,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:28:39.000000',_binary '',NULL,NULL,'2026-02-27 00:28:39.000000'),(133,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:28:53.000000',_binary '',NULL,NULL,'2026-02-27 00:28:53.000000'),(134,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:29:02.000000',_binary '',NULL,NULL,'2026-02-27 00:29:02.000000'),(135,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:29:03.000000',_binary '',NULL,NULL,'2026-02-27 00:29:03.000000'),(136,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:29:07.000000',_binary '',NULL,NULL,'2026-02-27 00:29:07.000000'),(137,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:31:18.000000',_binary '',NULL,NULL,'2026-02-27 00:31:18.000000'),(138,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:44:17.000000',_binary '',NULL,NULL,'2026-02-27 00:44:17.000000'),(139,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:44:29.000000',_binary '',NULL,NULL,'2026-02-27 00:44:29.000000'),(140,503,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:44:39.000000',_binary '',NULL,NULL,'2026-02-27 00:44:39.000000'),(141,502,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:44:42.000000',_binary '',NULL,NULL,'2026-02-27 00:44:42.000000'),(142,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:45:17.000000',_binary '',NULL,NULL,'2026-02-27 00:45:17.000000'),(143,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:57:02.000000',_binary '',NULL,NULL,'2026-02-27 00:57:02.000000'),(144,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:58:07.000000',_binary '',NULL,NULL,'2026-02-27 00:58:07.000000'),(145,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:58:14.000000',_binary '',NULL,NULL,'2026-02-27 00:58:14.000000'),(146,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:58:19.000000',_binary '',NULL,NULL,'2026-02-27 00:58:19.000000'),(147,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:58:20.000000',_binary '',NULL,NULL,'2026-02-27 00:58:20.000000'),(148,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:58:42.000000',_binary '',NULL,NULL,'2026-02-27 00:58:42.000000'),(149,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 00:58:47.000000',_binary '',NULL,NULL,'2026-02-27 00:58:47.000000'),(150,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 01:00:34.000000',_binary '',NULL,NULL,'2026-02-27 01:00:34.000000'),(151,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 01:00:37.000000',_binary '',NULL,NULL,'2026-02-27 01:00:37.000000'),(152,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 09:31:22.000000',_binary '',NULL,NULL,'2026-02-27 09:31:22.000000'),(153,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 09:31:34.000000',_binary '',NULL,NULL,'2026-02-27 09:31:34.000000'),(154,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 09:33:19.000000',_binary '',NULL,NULL,'2026-02-27 09:33:19.000000'),(155,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 09:33:30.000000',_binary '',NULL,NULL,'2026-02-27 09:33:30.000000'),(156,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 10:07:06.000000',_binary '',NULL,NULL,'2026-02-27 10:07:06.000000'),(157,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 10:09:04.000000',_binary '',NULL,NULL,'2026-02-27 10:09:04.000000'),(158,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 10:14:47.000000',_binary '',NULL,NULL,'2026-02-27 10:14:47.000000'),(159,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 10:18:35.000000',_binary '',NULL,NULL,'2026-02-27 10:18:35.000000'),(160,502,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 10:20:33.000000',_binary '',NULL,NULL,'2026-02-27 10:20:33.000000'),(161,503,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 10:20:35.000000',_binary '',NULL,NULL,'2026-02-27 10:20:35.000000'),(162,502,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 10:20:39.000000',_binary '',NULL,NULL,'2026-02-27 10:20:39.000000'),(163,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 10:20:41.000000',_binary '',NULL,NULL,'2026-02-27 10:20:41.000000'),(164,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 10:20:55.000000',_binary '',NULL,NULL,'2026-02-27 10:20:55.000000'),(165,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 10:21:31.000000',_binary '',NULL,NULL,'2026-02-27 10:21:31.000000'),(166,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 10:49:12.000000',_binary '',NULL,NULL,'2026-02-27 10:49:12.000000'),(167,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 11:04:05.000000',_binary '',NULL,NULL,'2026-02-27 11:04:05.000000'),(168,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 11:04:12.000000',_binary '',NULL,NULL,'2026-02-27 11:04:12.000000'),(169,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 11:30:41.000000',_binary '',NULL,NULL,'2026-02-27 11:30:41.000000'),(170,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 11:30:52.000000',_binary '',NULL,NULL,'2026-02-27 11:30:52.000000'),(171,502,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 11:31:14.000000',_binary '',NULL,NULL,'2026-02-27 11:31:14.000000'),(172,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 11:31:22.000000',_binary '',NULL,NULL,'2026-02-27 11:31:22.000000'),(173,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 11:32:58.000000',_binary '',NULL,NULL,'2026-02-27 11:32:58.000000'),(174,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 11:37:59.000000',_binary '',NULL,NULL,'2026-02-27 11:37:59.000000'),(175,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 11:39:58.000000',_binary '',NULL,NULL,'2026-02-27 11:39:58.000000'),(176,502,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 11:40:02.000000',_binary '',NULL,NULL,'2026-02-27 11:40:02.000000'),(177,502,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 11:40:11.000000',_binary '',NULL,NULL,'2026-02-27 11:40:11.000000'),(178,502,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 11:40:19.000000',_binary '',NULL,NULL,'2026-02-27 11:40:19.000000'),(179,503,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 11:40:23.000000',_binary '',NULL,NULL,'2026-02-27 11:40:23.000000'),(180,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 11:40:53.000000',_binary '',NULL,NULL,'2026-02-27 11:40:53.000000'),(181,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 11:45:41.000000',_binary '',NULL,NULL,'2026-02-27 11:45:41.000000'),(182,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 13:11:49.000000',_binary '',NULL,NULL,'2026-02-27 13:11:49.000000'),(183,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 15:07:14.000000',_binary '',NULL,NULL,'2026-02-27 15:07:14.000000'),(184,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-27 15:07:19.000000',_binary '',NULL,NULL,'2026-02-27 15:07:19.000000'),(185,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-02-28 00:35:19.000000',_binary '',NULL,NULL,'2026-02-28 00:35:19.000000'),(186,503,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-01 21:14:41.000000',_binary '',NULL,NULL,'2026-03-01 21:14:41.000000'),(187,503,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-01 22:12:51.000000',_binary '',NULL,NULL,'2026-03-01 22:12:51.000000'),(188,503,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-01 22:12:56.000000',_binary '',NULL,NULL,'2026-03-01 22:12:56.000000'),(189,503,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-01 22:12:56.000000',_binary '',NULL,NULL,'2026-03-01 22:12:56.000000'),(190,503,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-01 22:19:58.000000',_binary '',NULL,NULL,'2026-03-01 22:19:58.000000'),(191,503,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-01 22:23:22.000000',_binary '',NULL,NULL,'2026-03-01 22:23:22.000000'),(192,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-25 14:52:12.000000',_binary '',NULL,NULL,'2026-03-25 14:52:12.000000'),(193,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-25 14:53:17.000000',_binary '',NULL,NULL,'2026-03-25 14:53:17.000000'),(194,502,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-25 14:53:24.000000',_binary '',NULL,NULL,'2026-03-25 14:53:24.000000'),(195,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-25 14:53:28.000000',_binary '',NULL,NULL,'2026-03-25 14:53:28.000000'),(196,501,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-25 14:53:34.000000',_binary '',NULL,NULL,'2026-03-25 14:53:34.000000'),(197,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-25 14:53:40.000000',_binary '',NULL,NULL,'2026-03-25 14:53:40.000000'),(198,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-25 14:56:06.000000',_binary '',NULL,NULL,'2026-03-25 14:56:06.000000'),(199,500,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-25 15:02:05.000000',_binary '',NULL,NULL,'2026-03-25 15:02:05.000000'),(200,516,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-25 15:06:49.000000',_binary '',NULL,NULL,'2026-03-25 15:06:49.000000'),(201,515,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-25 15:06:55.000000',_binary '',NULL,NULL,'2026-03-25 15:06:55.000000'),(202,516,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-25 15:07:21.000000',_binary '',NULL,NULL,'2026-03-25 15:07:21.000000'),(203,510,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-25 15:07:46.000000',_binary '',NULL,NULL,'2026-03-25 15:07:46.000000'),(204,510,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-03-25 15:08:44.000000',_binary '',NULL,NULL,'2026-03-25 15:08:44.000000'),(205,521,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-04-27 14:21:34.200705',_binary '',NULL,NULL,'2026-04-27 14:21:34.203725'),(206,511,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-04-27 14:23:11.846026',_binary '',NULL,NULL,'2026-04-27 14:23:11.846756'),(207,553,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-04-29 00:11:12.900672',_binary '',NULL,NULL,'2026-04-29 00:11:12.922086'),(208,523,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-04-29 00:16:49.967189',_binary '',NULL,NULL,'2026-04-29 00:16:49.971406'),(209,515,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-04-29 00:19:16.192590',_binary '',NULL,NULL,'2026-04-29 00:19:16.196456'),(210,515,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-04-29 00:23:08.637400',_binary '',NULL,NULL,'2026-04-29 00:23:08.638959'),(211,515,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-04-29 00:24:04.510572',_binary '',NULL,NULL,'2026-04-29 00:24:04.603575'),(212,515,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-04-29 00:28:32.477947',_binary '',NULL,NULL,'2026-04-29 00:28:32.482845'),(213,506,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-04-29 00:39:40.784326',_binary '',NULL,NULL,'2026-04-29 00:39:40.788053'),(214,506,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-04-29 00:40:01.447272',_binary '',NULL,NULL,'2026-04-29 00:40:01.454040'),(215,1,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-04-29 11:03:41.074663',_binary '',NULL,NULL,'2026-04-29 11:03:41.081807'),(216,59,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-05-02 00:16:36.673296',_binary '',NULL,NULL,'2026-05-02 00:16:36.686484'),(217,207,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-05-25 19:53:04.781667',_binary '',NULL,NULL,'2026-05-25 19:53:04.797747'),(218,211,'CONSUMER',NULL,NULL,NULL,NULL,NULL,NULL,'AUTHENTIC',NULL,NULL,NULL,'2026-05-25 19:58:51.569526',_binary '',NULL,NULL,'2026-05-25 19:58:51.577552');
+/*!40000 ALTER TABLE `product_item_verifications` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc bảng cho bảng `provinces`
+-- Table structure for table `product_items`
 --
 
+DROP TABLE IF EXISTS `product_items`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `product_items` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `item_code` varchar(100) COLLATE utf8mb4_general_ci NOT NULL COMMENT 'Mã sản phẩm duy nhất, VD: PARA-BATCH001-0001',
+  `batch_id` bigint NOT NULL COMMENT 'FK to drug_batches',
+  `drug_product_id` bigint NOT NULL COMMENT 'FK to drug_products',
+  `qr_code_data` varchar(500) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT 'Dữ liệu trong QR (URL hoặc JSON)',
+  `qr_image_path` varchar(500) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT 'Đường dẫn file QR image (S3/MinIO)',
+  `qr_generated_at` datetime(6) DEFAULT NULL,
+  `current_status` enum('MANUFACTURED','IN_WAREHOUSE','IN_TRANSIT','DELIVERED','SOLD','EXPIRED','RECALLED','DAMAGED') COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'MANUFACTURED' COMMENT 'Trạng thái hiện tại của sản phẩm',
+  `current_owner_id` bigint DEFAULT NULL COMMENT 'ID công ty đang sở hữu',
+  `current_owner_type` enum('MANUFACTURER','DISTRIBUTOR','PHARMACY','CONSUMER') COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT 'Loại chủ sở hữu',
+  `manufacture_date` datetime(6) NOT NULL,
+  `expiry_date` datetime(6) NOT NULL,
+  `blockchain_token_id` bigint DEFAULT NULL COMMENT 'Token ID trên blockchain (nếu dùng NFT)',
+  `blockchain_merkle_proof` text COLLATE utf8mb4_general_ci COMMENT 'Merkle proof để verify',
+  `is_blockchain_synced` bit(1) NOT NULL DEFAULT b'0',
+  `notes` text COLLATE utf8mb4_general_ci,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP(6),
+  `sold_at` datetime(6) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_item_code` (`item_code`),
+  KEY `idx_batch_id` (`batch_id`),
+  KEY `idx_drug_product_id` (`drug_product_id`),
+  KEY `idx_current_status` (`current_status`),
+  KEY `idx_qr_code_data` (`qr_code_data`),
+  KEY `idx_batch_status` (`batch_id`,`current_status`),
+  KEY `idx_expiry_date` (`expiry_date`),
+  KEY `idx_owner` (`current_owner_id`,`current_owner_type`),
+  CONSTRAINT `fk_product_items_batch` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`) ON UPDATE CASCADE,
+  CONSTRAINT `fk_product_items_product` FOREIGN KEY (`drug_product_id`) REFERENCES `drug_products` (`id`) ON UPDATE CASCADE
+) ENGINE=InnoDB AUTO_INCREMENT=307 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Bảng quản lý từng sản phẩm riêng lẻ với QR code tracking';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `product_items`
+--
+
+LOCK TABLES `product_items` WRITE;
+/*!40000 ALTER TABLE `product_items` DISABLE KEYS */;
+INSERT INTO `product_items` VALUES (1,'ZT500-9417749',1,22,'ZT500-9417749',NULL,'2026-04-29 10:59:34.194133','MANUFACTURED',NULL,'MANUFACTURER','2026-04-29 10:59:34.075779','2029-09-25 23:59:59.000000',NULL,'0x291b2678bc19ff8bfc0fdf2c5c6f63a35d6fee0137112bfc72cd5b16957236f5,0x6395bd1e23625a399dbcde71f1bddb4881291730674e8ec9e358f04d441a6492,0xc05169eb2855af4877cd7e9d33e8777d791dde8571283fb868c0dc0028beef2a,0x0fd9a2ab958af98387ac896abd2f1474d6bab62bd6cf274927cab0c9dc13a85c',_binary '','\n[Blockchain] Registered in TX: 0xcb583bae641287b8262eb4e1937f152c28e712eee9e57efea86bd0811e7f1fb3 at block 2026-04-29T11:00:01.017568','2026-04-29 10:59:34.240331','2026-04-29 11:00:01.047764',NULL),(2,'ZT500-3491080',1,22,'ZT500-3491080',NULL,'2026-04-29 10:59:34.198424','MANUFACTURED',NULL,'MANUFACTURER','2026-04-29 10:59:34.075779','2029-09-25 23:59:59.000000',NULL,'0x2942cf804435ca02bfe7169b4bcc90e2ebe5a62f2353623d14d58a2351154a35,0x0fff4899d9d80cf34717561788dfbbcbc0ec86a85c782306906a12d5a9c7f0e0,0xc05169eb2855af4877cd7e9d33e8777d791dde8571283fb868c0dc0028beef2a,0x0fd9a2ab958af98387ac896abd2f1474d6bab62bd6cf274927cab0c9dc13a85c',_binary '','\n[Blockchain] Registered in TX: 0xcb583bae641287b8262eb4e1937f152c28e712eee9e57efea86bd0811e7f1fb3 at block 2026-04-29T11:00:01.018327','2026-04-29 10:59:34.248904','2026-04-29 11:00:01.048006',NULL),(3,'ZT500-5046889',1,22,'ZT500-5046889',NULL,'2026-04-29 10:59:34.201948','MANUFACTURED',NULL,'MANUFACTURER','2026-04-29 10:59:34.075779','2029-09-25 23:59:59.000000',NULL,'0x7260c64a34f75a49cef902c8f71199d958ee59f05edf42873fa66fa6b4b1b527,0x9220856755060d0482c28a4f31c602a3ddd40da8eb8ae6a739ae358fbf5da42e,0xb62dbe02d60236679ef11ccad62cf2ae732e9b768abdf348ad520140f39435f3,0x0fd9a2ab958af98387ac896abd2f1474d6bab62bd6cf274927cab0c9dc13a85c',_binary '','\n[Blockchain] Registered in TX: 0xcb583bae641287b8262eb4e1937f152c28e712eee9e57efea86bd0811e7f1fb3 at block 2026-04-29T11:00:01.018527','2026-04-29 10:59:34.254244','2026-04-29 11:00:01.048180',NULL),(4,'ZT500-8878666',1,22,'ZT500-8878666',NULL,'2026-04-29 10:59:34.207554','MANUFACTURED',NULL,'MANUFACTURER','2026-04-29 10:59:34.075779','2029-09-25 23:59:59.000000',NULL,'0xbfc35881678a50530bf0350e04bade485c69ac853efc20a736cbcde38ca6c781,0x3faf51dc734aebe26d8e00e43a24d251031b53f912fb401ad54486424739451e,0xe116fc6b0915f669609a8ef033ceea3685d16097157a758bcd83bbd016b85f5b,0x87b5239dcd8c2b7b7ca582054a7e810fd8379487be8ba4252029f603d5ca91ed',_binary '','\n[Blockchain] Registered in TX: 0xcb583bae641287b8262eb4e1937f152c28e712eee9e57efea86bd0811e7f1fb3 at block 2026-04-29T11:00:01.018595','2026-04-29 10:59:34.258651','2026-04-29 11:00:01.048256',NULL),(5,'ZT500-3005006',1,22,'ZT500-3005006',NULL,'2026-04-29 10:59:34.210139','MANUFACTURED',NULL,'MANUFACTURER','2026-04-29 10:59:34.075779','2029-09-25 23:59:59.000000',NULL,'0xdfa7374c5d6f198cbc5fab03bc080daf2953601022c19f1f33be7accea570b98,0x3faf51dc734aebe26d8e00e43a24d251031b53f912fb401ad54486424739451e,0xe116fc6b0915f669609a8ef033ceea3685d16097157a758bcd83bbd016b85f5b,0x87b5239dcd8c2b7b7ca582054a7e810fd8379487be8ba4252029f603d5ca91ed',_binary '','\n[Blockchain] Registered in TX: 0xcb583bae641287b8262eb4e1937f152c28e712eee9e57efea86bd0811e7f1fb3 at block 2026-04-29T11:00:01.018734','2026-04-29 10:59:34.263213','2026-04-29 11:00:01.048309',NULL),(6,'ZT500-2716162',1,22,'ZT500-2716162',NULL,'2026-04-29 10:59:34.212395','MANUFACTURED',NULL,'MANUFACTURER','2026-04-29 10:59:34.075779','2029-09-25 23:59:59.000000',NULL,'0x33527f0cf301aa22d0fac4e0bb98c26c2dc6b9d5b2455232eefeb813461c4911,0x0fff4899d9d80cf34717561788dfbbcbc0ec86a85c782306906a12d5a9c7f0e0,0xc05169eb2855af4877cd7e9d33e8777d791dde8571283fb868c0dc0028beef2a,0x0fd9a2ab958af98387ac896abd2f1474d6bab62bd6cf274927cab0c9dc13a85c',_binary '','\n[Blockchain] Registered in TX: 0xcb583bae641287b8262eb4e1937f152c28e712eee9e57efea86bd0811e7f1fb3 at block 2026-04-29T11:00:01.019042','2026-04-29 10:59:34.267139','2026-04-29 11:00:01.048360',NULL),(7,'ZT500-3399873',1,22,'ZT500-3399873',NULL,'2026-04-29 10:59:34.214917','MANUFACTURED',NULL,'MANUFACTURER','2026-04-29 10:59:34.075779','2029-09-25 23:59:59.000000',NULL,'0x1ef9258aaa18de3f562897acc37e43ba77e638754ebd0ea566944bb56277a4dd,0x6395bd1e23625a399dbcde71f1bddb4881291730674e8ec9e358f04d441a6492,0xc05169eb2855af4877cd7e9d33e8777d791dde8571283fb868c0dc0028beef2a,0x0fd9a2ab958af98387ac896abd2f1474d6bab62bd6cf274927cab0c9dc13a85c',_binary '','\n[Blockchain] Registered in TX: 0xcb583bae641287b8262eb4e1937f152c28e712eee9e57efea86bd0811e7f1fb3 at block 2026-04-29T11:00:01.019397','2026-04-29 10:59:34.272878','2026-04-29 11:00:01.048416',NULL),(8,'ZT500-4493248',1,22,'ZT500-4493248',NULL,'2026-04-29 10:59:34.218313','MANUFACTURED',NULL,'MANUFACTURER','2026-04-29 10:59:34.075779','2029-09-25 23:59:59.000000',NULL,'0x6499ce4a4b2930f0a1564618c2b451a457db296e2f094702d5301c570e7e18f6,0x8267efac2fd6d37d96d75ded4634e34e0f671babd532426862b61ed853881720,0xb62dbe02d60236679ef11ccad62cf2ae732e9b768abdf348ad520140f39435f3,0x0fd9a2ab958af98387ac896abd2f1474d6bab62bd6cf274927cab0c9dc13a85c',_binary '','\n[Blockchain] Registered in TX: 0xcb583bae641287b8262eb4e1937f152c28e712eee9e57efea86bd0811e7f1fb3 at block 2026-04-29T11:00:01.019571','2026-04-29 10:59:34.276794','2026-04-29 11:00:01.048465',NULL),(9,'ZT500-7305483',1,22,'ZT500-7305483',NULL,'2026-04-29 10:59:34.222775','MANUFACTURED',NULL,'MANUFACTURER','2026-04-29 10:59:34.075779','2029-09-25 23:59:59.000000',NULL,'0x2bc07d40adb0ea4c5aa6c22b86669dc0676d0a338fb3f90c29314dc2120b70f1,0x87b5239dcd8c2b7b7ca582054a7e810fd8379487be8ba4252029f603d5ca91ed',_binary '','\n[Blockchain] Registered in TX: 0xcb583bae641287b8262eb4e1937f152c28e712eee9e57efea86bd0811e7f1fb3 at block 2026-04-29T11:00:01.019657','2026-04-29 10:59:34.283387','2026-04-29 11:00:01.048518',NULL),(10,'ZT500-7541572',1,22,'ZT500-7541572',NULL,'2026-04-29 10:59:34.225989','MANUFACTURED',NULL,'MANUFACTURER','2026-04-29 10:59:34.075779','2029-09-25 23:59:59.000000',NULL,'0x750402d7390f09cf419439b05484bf02dc7645a01b175de9e56af14524e52fb8,0x9220856755060d0482c28a4f31c602a3ddd40da8eb8ae6a739ae358fbf5da42e,0xb62dbe02d60236679ef11ccad62cf2ae732e9b768abdf348ad520140f39435f3,0x0fd9a2ab958af98387ac896abd2f1474d6bab62bd6cf274927cab0c9dc13a85c',_binary '','\n[Blockchain] Registered in TX: 0xcb583bae641287b8262eb4e1937f152c28e712eee9e57efea86bd0811e7f1fb3 at block 2026-04-29T11:00:01.019888','2026-04-29 10:59:34.291653','2026-04-29 11:00:01.048566',NULL),(11,'ZT500-9510343',1,22,'ZT500-9510343',NULL,'2026-04-29 10:59:34.229144','MANUFACTURED',NULL,'MANUFACTURER','2026-04-29 10:59:34.075779','2029-09-25 23:59:59.000000',NULL,'0xb58beaf6d60f2a6697904affe4fa8129dfcc778e36167a890a473d7535247ed5,0x80a3636e8847e5d765447950b1e41446319b5b225def64d3f39e6ac714c7ce3c,0xe116fc6b0915f669609a8ef033ceea3685d16097157a758bcd83bbd016b85f5b,0x87b5239dcd8c2b7b7ca582054a7e810fd8379487be8ba4252029f603d5ca91ed',_binary '','\n[Blockchain] Registered in TX: 0xcb583bae641287b8262eb4e1937f152c28e712eee9e57efea86bd0811e7f1fb3 at block 2026-04-29T11:00:01.019996','2026-04-29 10:59:34.301924','2026-04-29 11:00:01.048620',NULL),(12,'ZT500-0324978',1,22,'ZT500-0324978',NULL,'2026-04-29 10:59:34.234432','MANUFACTURED',NULL,'MANUFACTURER','2026-04-29 10:59:34.075779','2029-09-25 23:59:59.000000',NULL,'0x60e7ff795080d043de7942c5f7cea58e2eb75667558301a86a791cf0268a80f5,0x8267efac2fd6d37d96d75ded4634e34e0f671babd532426862b61ed853881720,0xb62dbe02d60236679ef11ccad62cf2ae732e9b768abdf348ad520140f39435f3,0x0fd9a2ab958af98387ac896abd2f1474d6bab62bd6cf274927cab0c9dc13a85c',_binary '','\n[Blockchain] Registered in TX: 0xcb583bae641287b8262eb4e1937f152c28e712eee9e57efea86bd0811e7f1fb3 at block 2026-04-29T11:00:01.020346','2026-04-29 10:59:34.310029','2026-04-29 11:00:01.048667',NULL),(13,'ZT500-2913906',1,22,'ZT500-2913906',NULL,'2026-04-29 10:59:34.237568','MANUFACTURED',NULL,'MANUFACTURER','2026-04-29 10:59:34.075779','2029-09-25 23:59:59.000000',NULL,'0x8c63ecb9b27d8e04ff8e98732f793cdb6cdaebc0a0691abf9d09b1f382d6f873,0x80a3636e8847e5d765447950b1e41446319b5b225def64d3f39e6ac714c7ce3c,0xe116fc6b0915f669609a8ef033ceea3685d16097157a758bcd83bbd016b85f5b,0x87b5239dcd8c2b7b7ca582054a7e810fd8379487be8ba4252029f603d5ca91ed',_binary '','\n[Blockchain] Registered in TX: 0xcb583bae641287b8262eb4e1937f152c28e712eee9e57efea86bd0811e7f1fb3 at block 2026-04-29T11:00:01.020739','2026-04-29 10:59:34.315483','2026-04-29 11:00:01.048714',NULL),(14,'CM200-6397281',2,24,'CM200-6397281',NULL,'2026-04-30 22:25:49.063368','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0x0672df5fc1525164ce1d17f0cdb7e56908b119f5d2b56a0b9895d650f01c78ca,0x1b2439a47358af3d3fb3f49dae4a2372dca466bef4909a1a5d2411fd1cf6b9a1,0xfd71ed5a58c98932c4b7a8b6e323611e02a97f6b5d7972ce9dbcf7997c233e43,0x871d7bad9bec4374208fd209d69b0fa9c41d6a2e19548dadedc9cd904a940e6e,0x361206b6a18d52868e4da482c75bfbd663017fc561259e501194aab965ec3b87',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.650185','2026-04-30 22:25:49.162845','2026-04-30 22:26:00.656654',NULL),(15,'CM200-1551593',2,24,'CM200-1551593',NULL,'2026-04-30 22:25:49.065146','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0x3d87becaf13b4aeb130915c1e63fc69078cefcef54e34f5598463bf86bb5a32f,0x6f2f0c6d5595a43cd8b8aac72b28cc7fbc771d701a353d42cec9ae81c2a63bd0,0xfc25e615555b464c5104035d73ab60f5c6638e4df3383b0b87077ab55b975540,0xf5e5da72edca0b1e8eab889ad9107363cc8bac96723a1e528692502b4da071d0,0x361206b6a18d52868e4da482c75bfbd663017fc561259e501194aab965ec3b87',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.650540','2026-04-30 22:25:49.187950','2026-04-30 22:26:00.657110',NULL),(16,'CM200-3413226',2,24,'CM200-3413226',NULL,'2026-04-30 22:25:49.066963','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0x9ebeba97d0e554bab74b544f849a8e019477838bb9f8c1a39ad0d020385434f2,0x95ee1f343ef4ba0e96376913ac1ee6a128f53a2295b6d11024a54e102af895bf,0xdac5cd85e6df1b74c496d7824489baf5131c714b40fb26d615b47a39f3d6d74f,0xf5e5da72edca0b1e8eab889ad9107363cc8bac96723a1e528692502b4da071d0,0x361206b6a18d52868e4da482c75bfbd663017fc561259e501194aab965ec3b87',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.650604','2026-04-30 22:25:49.193745','2026-04-30 22:26:00.657282',NULL),(17,'CM200-4215309',2,24,'CM200-4215309',NULL,'2026-04-30 22:25:49.069226','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0x15d17ebbaff428e8731e13307b0b68823b702c89903882ad218adafa4adacd94,0x1540c7e9ac794272993dbaa69ff3e67a391bbb0851c7b8b917076ab0e7bfd1ac,0x9e6789743ab7c31a9de6f18a7af7c4c66630b0f3fae82939738d107eb0ad5331,0x871d7bad9bec4374208fd209d69b0fa9c41d6a2e19548dadedc9cd904a940e6e,0x361206b6a18d52868e4da482c75bfbd663017fc561259e501194aab965ec3b87',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.650631','2026-04-30 22:25:49.202114','2026-04-30 22:26:00.657328',NULL),(18,'CM200-1719605',2,24,'CM200-1719605',NULL,'2026-04-30 22:25:49.071667','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0x53980721456fcefb936fc08dd1966f2fed2eac026df972d956cea4d7796b92e6,0x2b789ed4c8c0258dbf8a87b1677e855af03b5c7fd4217d1d4c3b75b5306399d2,0xfc25e615555b464c5104035d73ab60f5c6638e4df3383b0b87077ab55b975540,0xf5e5da72edca0b1e8eab889ad9107363cc8bac96723a1e528692502b4da071d0,0x361206b6a18d52868e4da482c75bfbd663017fc561259e501194aab965ec3b87',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.650651','2026-04-30 22:25:49.213454','2026-04-30 22:26:00.657601',NULL),(19,'CM200-0329588',2,24,'CM200-0329588',NULL,'2026-04-30 22:25:49.074061','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0x007cd90589c82093124c8b39844d043e3fe5a93928bd279b8ef2539c1f72d22a,0x1b2439a47358af3d3fb3f49dae4a2372dca466bef4909a1a5d2411fd1cf6b9a1,0xfd71ed5a58c98932c4b7a8b6e323611e02a97f6b5d7972ce9dbcf7997c233e43,0x871d7bad9bec4374208fd209d69b0fa9c41d6a2e19548dadedc9cd904a940e6e,0x361206b6a18d52868e4da482c75bfbd663017fc561259e501194aab965ec3b87',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.650724','2026-04-30 22:25:49.221593','2026-04-30 22:26:00.657650',NULL),(20,'CM200-1590738',2,24,'CM200-1590738',NULL,'2026-04-30 22:25:49.077883','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0xb49f4ac229cf6d39551d0d665e5f84b8e9dc15143fa953d022017fcde8e2f4ec,0x7949a6761c94a3d0bf71ae3f0601add101ec024cf71878133305f6a3d3b29101,0x89e4c82229d711be10456275fe920dac6598621f3516ba843fea460d75ef3cfe',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.650771','2026-04-30 22:25:49.228887','2026-04-30 22:26:00.657689',NULL),(21,'CM200-4804658',2,24,'CM200-4804658',NULL,'2026-04-30 22:25:49.085447','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0xc53b60992e32c2763937829eb89d4dec5e739e4432ce6f0292a5b315738cc9a3,0x7949a6761c94a3d0bf71ae3f0601add101ec024cf71878133305f6a3d3b29101,0x89e4c82229d711be10456275fe920dac6598621f3516ba843fea460d75ef3cfe',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.650799','2026-04-30 22:25:49.237588','2026-04-30 22:26:00.657733',NULL),(22,'CM200-5066150',2,24,'CM200-5066150',NULL,'2026-04-30 22:25:49.088363','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0x4d3f64f4f7b41fe951c956caa464e9c0e85361b88793ebee7c794eba24b5acd6,0x6f2f0c6d5595a43cd8b8aac72b28cc7fbc771d701a353d42cec9ae81c2a63bd0,0xfc25e615555b464c5104035d73ab60f5c6638e4df3383b0b87077ab55b975540,0xf5e5da72edca0b1e8eab889ad9107363cc8bac96723a1e528692502b4da071d0,0x361206b6a18d52868e4da482c75bfbd663017fc561259e501194aab965ec3b87',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.651028','2026-04-30 22:25:49.249932','2026-04-30 22:26:00.657776',NULL),(23,'CM200-1127696',2,24,'CM200-1127696',NULL,'2026-04-30 22:25:49.092440','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0x18302fce9fcd6ab3044444c59706b3bfad85fd4a4e7d5b8a107e0f20d09a582a,0x1540c7e9ac794272993dbaa69ff3e67a391bbb0851c7b8b917076ab0e7bfd1ac,0x9e6789743ab7c31a9de6f18a7af7c4c66630b0f3fae82939738d107eb0ad5331,0x871d7bad9bec4374208fd209d69b0fa9c41d6a2e19548dadedc9cd904a940e6e,0x361206b6a18d52868e4da482c75bfbd663017fc561259e501194aab965ec3b87',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.651081','2026-04-30 22:25:49.258377','2026-04-30 22:26:00.658052',NULL),(24,'CM200-0070795',2,24,'CM200-0070795',NULL,'2026-04-30 22:25:49.099484','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0x65560f615d71e489e47ba40c31c0f865b303da1fa53e9500592808603008be01,0x2b789ed4c8c0258dbf8a87b1677e855af03b5c7fd4217d1d4c3b75b5306399d2,0xfc25e615555b464c5104035d73ab60f5c6638e4df3383b0b87077ab55b975540,0xf5e5da72edca0b1e8eab889ad9107363cc8bac96723a1e528692502b4da071d0,0x361206b6a18d52868e4da482c75bfbd663017fc561259e501194aab965ec3b87',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.651117','2026-04-30 22:25:49.263642','2026-04-30 22:26:00.658136',NULL),(25,'CM200-2742311',2,24,'CM200-2742311',NULL,'2026-04-30 22:25:49.103719','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0x699ccb47d2fb992b80327fcfab01144cae0c5f65160985647aafae002a15c961,0x9ff8529d4a1c70d855d2c0104db5ddea13af64da5d239399581385160fc49d9c,0xdac5cd85e6df1b74c496d7824489baf5131c714b40fb26d615b47a39f3d6d74f,0xf5e5da72edca0b1e8eab889ad9107363cc8bac96723a1e528692502b4da071d0,0x361206b6a18d52868e4da482c75bfbd663017fc561259e501194aab965ec3b87',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.651137','2026-04-30 22:25:49.268493','2026-04-30 22:26:00.658186',NULL),(26,'CM200-3645404',2,24,'CM200-3645404',NULL,'2026-04-30 22:25:49.109752','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0x307c1afbd06e222104b12124d50e18c7878a6c8f5123d45290438da1b2df3929,0x27a2d8416f54d4e2855bea3304f0c31948bd8c94f49b367722590f9fdd0293c2,0x9e6789743ab7c31a9de6f18a7af7c4c66630b0f3fae82939738d107eb0ad5331,0x871d7bad9bec4374208fd209d69b0fa9c41d6a2e19548dadedc9cd904a940e6e,0x361206b6a18d52868e4da482c75bfbd663017fc561259e501194aab965ec3b87',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.651155','2026-04-30 22:25:49.276205','2026-04-30 22:26:00.658230',NULL),(27,'CM200-7624684',2,24,'CM200-7624684',NULL,'2026-04-30 22:25:49.114285','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0xc6841119aa0dfdc3ff06f381b91b396ad30a0ceca23c1fc6a1ee0ed7b083b740,0x2f7cfc5168766edaf0471078b4e0402282ca8fd23457f27a67d6f40d1adfc6a5,0x89e4c82229d711be10456275fe920dac6598621f3516ba843fea460d75ef3cfe',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.651350','2026-04-30 22:25:49.279854','2026-04-30 22:26:00.658276',NULL),(28,'CM200-6000088',2,24,'CM200-6000088',NULL,'2026-04-30 22:25:49.117788','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0xc556baa59ac34cc2a4b198ade3b098b6c0edaf9fa0e2b1363023150b50802f1d,0x2f7cfc5168766edaf0471078b4e0402282ca8fd23457f27a67d6f40d1adfc6a5,0x89e4c82229d711be10456275fe920dac6598621f3516ba843fea460d75ef3cfe',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.651373','2026-04-30 22:25:49.283175','2026-04-30 22:26:00.658330',NULL),(29,'CM200-9996626',2,24,'CM200-9996626',NULL,'2026-04-30 22:25:49.122300','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0x183fe8703e34c3852e801ccaa6220cd45baba16d55ddcaa4319f47d0d3e38d75,0x27a2d8416f54d4e2855bea3304f0c31948bd8c94f49b367722590f9fdd0293c2,0x9e6789743ab7c31a9de6f18a7af7c4c66630b0f3fae82939738d107eb0ad5331,0x871d7bad9bec4374208fd209d69b0fa9c41d6a2e19548dadedc9cd904a940e6e,0x361206b6a18d52868e4da482c75bfbd663017fc561259e501194aab965ec3b87',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.651603','2026-04-30 22:25:49.289024','2026-04-30 22:26:00.658369',NULL),(30,'CM200-0151369',2,24,'CM200-0151369',NULL,'2026-04-30 22:25:49.133273','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0xaee0ce1bed76bee7372dd876b11e0bf203edf782ee5bc314c984bfaf03062a23,0x95ee1f343ef4ba0e96376913ac1ee6a128f53a2295b6d11024a54e102af895bf,0xdac5cd85e6df1b74c496d7824489baf5131c714b40fb26d615b47a39f3d6d74f,0xf5e5da72edca0b1e8eab889ad9107363cc8bac96723a1e528692502b4da071d0,0x361206b6a18d52868e4da482c75bfbd663017fc561259e501194aab965ec3b87',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.651699','2026-04-30 22:25:49.296658','2026-04-30 22:26:00.658406',NULL),(31,'CM200-5427090',2,24,'CM200-5427090',NULL,'2026-04-30 22:25:49.146078','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0x0dfda770254a0ecd64e64c36bf7dca1f6024e08121004905a2d4ef58048e3e60,0x7c81d727c663b1c9653a59df1c4513251ec2274bb63f9b5d267f991d6da48d52,0xfd71ed5a58c98932c4b7a8b6e323611e02a97f6b5d7972ce9dbcf7997c233e43,0x871d7bad9bec4374208fd209d69b0fa9c41d6a2e19548dadedc9cd904a940e6e,0x361206b6a18d52868e4da482c75bfbd663017fc561259e501194aab965ec3b87',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.651887','2026-04-30 22:25:49.304118','2026-04-30 22:26:00.658446',NULL),(32,'CM200-0442386',2,24,'CM200-0442386',NULL,'2026-04-30 22:25:49.148868','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0x0add3feac49518e718a3298c743cabcddd6905540d3373d4286fa7fba4557cc9,0x7c81d727c663b1c9653a59df1c4513251ec2274bb63f9b5d267f991d6da48d52,0xfd71ed5a58c98932c4b7a8b6e323611e02a97f6b5d7972ce9dbcf7997c233e43,0x871d7bad9bec4374208fd209d69b0fa9c41d6a2e19548dadedc9cd904a940e6e,0x361206b6a18d52868e4da482c75bfbd663017fc561259e501194aab965ec3b87',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.651920','2026-04-30 22:25:49.307782','2026-04-30 22:26:00.658487',NULL),(33,'CM200-5949922',2,24,'CM200-5949922',NULL,'2026-04-30 22:25:49.151577','MANUFACTURED',NULL,'MANUFACTURER','2026-04-30 22:25:48.896834','2029-03-20 23:59:59.000000',NULL,'0x69737d080afe53fa5f3f94014a29b90ebec806b81c825b5bd1f8a14a9387eafd,0x9ff8529d4a1c70d855d2c0104db5ddea13af64da5d239399581385160fc49d9c,0xdac5cd85e6df1b74c496d7824489baf5131c714b40fb26d615b47a39f3d6d74f,0xf5e5da72edca0b1e8eab889ad9107363cc8bac96723a1e528692502b4da071d0,0x361206b6a18d52868e4da482c75bfbd663017fc561259e501194aab965ec3b87',_binary '','\n[Blockchain] Registered in TX: 0x477a7e2b70d37462aff7df16b565eaa1278954cc48da0df31cceb91811f7cba5 at block 2026-04-30T22:26:00.652203','2026-04-30 22:25:49.317044','2026-04-30 22:26:00.658535',NULL),(34,'CM200-4409860',3,24,'CM200-4409860',NULL,'2026-05-01 23:25:56.096466','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:25:56.053899','2028-03-20 23:59:59.000000',NULL,'0x2b9ff35d0a083ac6e60dda7545e53d1de1d442f243db4bc9bf91a35bc8757726',_binary '','\n[Blockchain] Registered in TX: 0x3d13e52005d568fc35da708e22e9a94333591da551dd228fac8d4a2e4dd2fe92 at block 2026-05-01T23:26:00.848817','2026-05-01 23:25:56.100232','2026-05-01 23:26:00.852070',NULL),(35,'CM200-3294077',3,24,'CM200-3294077',NULL,'2026-05-01 23:25:56.098375','SOLD',NULL,'CONSUMER','2026-05-01 23:25:56.053899','2028-03-20 23:59:59.000000',NULL,'0x63cbbeb9d4a906d82ce8343a56aead60a399a24a98c5c355424ff0e74d8b9585',_binary '','\n[Blockchain] Registered in TX: 0x3d13e52005d568fc35da708e22e9a94333591da551dd228fac8d4a2e4dd2fe92 at block 2026-05-01T23:26:00.848935','2026-05-01 23:25:56.106841','2026-05-25 20:01:16.615864',NULL),(36,'MV-4940572',4,23,'MV-4940572',NULL,'2026-05-01 23:41:10.167332','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0x89faca6849c76a3bc71a7c6599b42e75f4e7b9a9690fe9221bc648dd739b7482,0xed3e8c070f98f70bde14a84618992b24802e5b7d8ad521a5c17255f7ed916042,0x34e261d5fa5158ad04c62e236399dab542ecc1796c3c0195de6be48db1537a86,0x42241c10fd89ab02669e491a8df9c4e6ff4685b236ddd88ce0fa07dd79bb3d70,0x76f80a897bb1ce62ed699759c28d6ca46bbd833aa77dd3b3553711d85b69fd90',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.756702','2026-05-01 23:41:10.201352','2026-05-01 23:41:13.764943',NULL),(37,'MV-7259432',4,23,'MV-7259432',NULL,'2026-05-01 23:41:10.169040','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0x636e81a435ed287596e74ede19fb487d441733082d714e327eb19c8425d320c0,0x46b7a95dbae8a70dc024b364f5b44fefadf6e41d2699dd891490922ca5d7e77c,0x34e261d5fa5158ad04c62e236399dab542ecc1796c3c0195de6be48db1537a86,0x42241c10fd89ab02669e491a8df9c4e6ff4685b236ddd88ce0fa07dd79bb3d70,0x76f80a897bb1ce62ed699759c28d6ca46bbd833aa77dd3b3553711d85b69fd90',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.756792','2026-05-01 23:41:10.205812','2026-05-01 23:41:13.765021',NULL),(38,'MV-5699021',4,23,'MV-5699021',NULL,'2026-05-01 23:41:10.170503','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0x48841b536d076c81fe0544e9eb76bf2397c9af10c1f61bf7317063176a285874,0xfd1273ca256a4b0647fd50b66887e77817d07b6fd860a805bf713774378d4ec9,0x82c902b94dbf6c435a11907772d687d716e30dc2116685a45a17b2585f1cf75a,0x42241c10fd89ab02669e491a8df9c4e6ff4685b236ddd88ce0fa07dd79bb3d70,0x76f80a897bb1ce62ed699759c28d6ca46bbd833aa77dd3b3553711d85b69fd90',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.756857','2026-05-01 23:41:10.207855','2026-05-01 23:41:13.765096',NULL),(39,'MV-4740286',4,23,'MV-4740286',NULL,'2026-05-01 23:41:10.172082','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0xf308a50dcaced3cfebf386188ae009974b977b63c125d6e20d2c080f3d31f1c1,0xc763045856a5874c1d2560d83b849e809601517c8a59e2a246d89aee3c7a60ea,0x0b72762655d76eb2515974d78e2b13602ce04c80bba0c0ce08807b4b40f4dc5b',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.756895','2026-05-01 23:41:10.209436','2026-05-01 23:41:13.765144',NULL),(40,'MV-2540555',4,23,'MV-2540555',NULL,'2026-05-01 23:41:10.174138','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0xc6ea5af9314b591580c8f256c7f6ae1b34aa03b10d793cddef1ad4a389deb25a,0xed3f9f7e30cf8caa1b65d46c37f213ae2e3c5713933e4678fb4f830b86f1d345,0xc763045856a5874c1d2560d83b849e809601517c8a59e2a246d89aee3c7a60ea,0x0b72762655d76eb2515974d78e2b13602ce04c80bba0c0ce08807b4b40f4dc5b',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.756950','2026-05-01 23:41:10.212214','2026-05-01 23:41:13.765200',NULL),(41,'MV-7218534',4,23,'MV-7218534',NULL,'2026-05-01 23:41:10.176087','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0xbf6f1fab640191fb5ad1ca6b245194f4bd01baac25676f6d1b6f56a890d85e30,0x436c3d02c90d8da450cc2f196713336220387125fcb72f8576d6507f17e4f1de,0xebae749f01570fedce92cffc52aed941ba4ef2906e9b7de3999c52d25f53af0c,0x0b72762655d76eb2515974d78e2b13602ce04c80bba0c0ce08807b4b40f4dc5b',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.756986','2026-05-01 23:41:10.214173','2026-05-01 23:41:13.765245',NULL),(42,'MV-2907026',4,23,'MV-2907026',NULL,'2026-05-01 23:41:10.177976','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0x011c8f99ced58e962190a227338aea8fdd731d2d3a04c87d43d03941f8cbe144,0x02096c3de760150eabd1c6181b9bfb713b9ce41c9880d9bd372ee98fff1e85a8,0x7b9632562cb774076060149b5f0bb68b4195c578818d4ed192ce0022f30ce664,0xd63e728b5f15fd4167cb9275a8a22d2cdf224fee176937fc63fe5f23980ad14e,0x76f80a897bb1ce62ed699759c28d6ca46bbd833aa77dd3b3553711d85b69fd90',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.757039','2026-05-01 23:41:10.216371','2026-05-01 23:41:13.765389',NULL),(43,'MV-3544779',4,23,'MV-3544779',NULL,'2026-05-01 23:41:10.179184','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0xde249687a01d60e953f18678f076232f0dea083ea8814c237f9ec08b5103a211,0xed3f9f7e30cf8caa1b65d46c37f213ae2e3c5713933e4678fb4f830b86f1d345,0xc763045856a5874c1d2560d83b849e809601517c8a59e2a246d89aee3c7a60ea,0x0b72762655d76eb2515974d78e2b13602ce04c80bba0c0ce08807b4b40f4dc5b',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.757080','2026-05-01 23:41:10.217847','2026-05-01 23:41:13.765439',NULL),(44,'MV-6272994',4,23,'MV-6272994',NULL,'2026-05-01 23:41:10.180995','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0x7aa0d50d4026477c112d0fbc7618a3201c18d5e94c0d33ef9caba0140815ad08,0xed3e8c070f98f70bde14a84618992b24802e5b7d8ad521a5c17255f7ed916042,0x34e261d5fa5158ad04c62e236399dab542ecc1796c3c0195de6be48db1537a86,0x42241c10fd89ab02669e491a8df9c4e6ff4685b236ddd88ce0fa07dd79bb3d70,0x76f80a897bb1ce62ed699759c28d6ca46bbd833aa77dd3b3553711d85b69fd90',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.757120','2026-05-01 23:41:10.219182','2026-05-01 23:41:13.765486',NULL),(45,'MV-8521686',4,23,'MV-8521686',NULL,'2026-05-01 23:41:10.182734','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0xc3deeefd2609ffdc2e72fa9fa66f93f4d9f6c0ee0c4930486d6b14219ada1fd1,0x436c3d02c90d8da450cc2f196713336220387125fcb72f8576d6507f17e4f1de,0xebae749f01570fedce92cffc52aed941ba4ef2906e9b7de3999c52d25f53af0c,0x0b72762655d76eb2515974d78e2b13602ce04c80bba0c0ce08807b4b40f4dc5b',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.757152','2026-05-01 23:41:10.220570','2026-05-01 23:41:13.765530',NULL),(46,'MV-4390234',4,23,'MV-4390234',NULL,'2026-05-01 23:41:10.183900','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0x0e64b484e520d51e8ffc848b3d5088830ef2ba36e03b0200d12052a63a3010e1,0x47e9e3c51d36167d20a54add94d6cf9c53172c0b8ca187e4d670820f3723762d,0xad82aae0e1590c94c4881d4187961f5ee55c7e25fdcc8b1940d7f0a96e323b9a,0xd63e728b5f15fd4167cb9275a8a22d2cdf224fee176937fc63fe5f23980ad14e,0x76f80a897bb1ce62ed699759c28d6ca46bbd833aa77dd3b3553711d85b69fd90',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.757184','2026-05-01 23:41:10.222300','2026-05-01 23:41:13.765573',NULL),(47,'MV-1658709',4,23,'MV-1658709',NULL,'2026-05-01 23:41:10.185159','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0x05561fe6ab6e2a717e31bec94251872a0134ece28ecbac8c802cf2ab71655d07,0x4a8bae82fa408550f41bcb8e6fb10615502b46c71fac9039e356615a8547e64b,0x7b9632562cb774076060149b5f0bb68b4195c578818d4ed192ce0022f30ce664,0xd63e728b5f15fd4167cb9275a8a22d2cdf224fee176937fc63fe5f23980ad14e,0x76f80a897bb1ce62ed699759c28d6ca46bbd833aa77dd3b3553711d85b69fd90',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.757234','2026-05-01 23:41:10.223825','2026-05-01 23:41:13.765620',NULL),(48,'MV-1498418',4,23,'MV-1498418',NULL,'2026-05-01 23:41:10.187039','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0x6c5962ed6adee0a252fe01c9fbfa22a900cac02c5793abec2ae9dd5d1503a38a,0x46b7a95dbae8a70dc024b364f5b44fefadf6e41d2699dd891490922ca5d7e77c,0x34e261d5fa5158ad04c62e236399dab542ecc1796c3c0195de6be48db1537a86,0x42241c10fd89ab02669e491a8df9c4e6ff4685b236ddd88ce0fa07dd79bb3d70,0x76f80a897bb1ce62ed699759c28d6ca46bbd833aa77dd3b3553711d85b69fd90',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.757270','2026-05-01 23:41:10.225613','2026-05-01 23:41:13.765666',NULL),(49,'MV-8506410',4,23,'MV-8506410',NULL,'2026-05-01 23:41:10.188597','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0xbf0aedcf9548fa697cd0b273862b3de6d493d2575835f0a6a3aaa56556a42526,0xfcc7e5183a6c704bd507fc2a745a6fa0645a887fa3194e427eb3f2276c17cfa5,0xebae749f01570fedce92cffc52aed941ba4ef2906e9b7de3999c52d25f53af0c,0x0b72762655d76eb2515974d78e2b13602ce04c80bba0c0ce08807b4b40f4dc5b',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.757311','2026-05-01 23:41:10.227320','2026-05-01 23:41:13.765715',NULL),(50,'MV-0361538',4,23,'MV-0361538',NULL,'2026-05-01 23:41:10.190127','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0x270e6714f6ad5ca3844eea1cb9c4416a2c063269b024ab575316e1b0b2995c15,0xb685a0772f94ad43ea8aec09ce9ee45e5063948b9923147b18595ae9555ba53c,0x82c902b94dbf6c435a11907772d687d716e30dc2116685a45a17b2585f1cf75a,0x42241c10fd89ab02669e491a8df9c4e6ff4685b236ddd88ce0fa07dd79bb3d70,0x76f80a897bb1ce62ed699759c28d6ca46bbd833aa77dd3b3553711d85b69fd90',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.757345','2026-05-01 23:41:10.228496','2026-05-01 23:41:13.765763',NULL),(51,'MV-1049490',4,23,'MV-1049490',NULL,'2026-05-01 23:41:10.191535','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0x4b6c78c277cfda5a279384cc932c731f3181cac217df26f5f790eb7c9c74f183,0xfd1273ca256a4b0647fd50b66887e77817d07b6fd860a805bf713774378d4ec9,0x82c902b94dbf6c435a11907772d687d716e30dc2116685a45a17b2585f1cf75a,0x42241c10fd89ab02669e491a8df9c4e6ff4685b236ddd88ce0fa07dd79bb3d70,0x76f80a897bb1ce62ed699759c28d6ca46bbd833aa77dd3b3553711d85b69fd90',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.757384','2026-05-01 23:41:10.229820','2026-05-01 23:41:13.765809',NULL),(52,'MV-7290756',4,23,'MV-7290756',NULL,'2026-05-01 23:41:10.192621','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0x9cebb8432df1ad82653ea43f7172b44a94144226d0c447c704a4a4927962dbac,0xfcc7e5183a6c704bd507fc2a745a6fa0645a887fa3194e427eb3f2276c17cfa5,0xebae749f01570fedce92cffc52aed941ba4ef2906e9b7de3999c52d25f53af0c,0x0b72762655d76eb2515974d78e2b13602ce04c80bba0c0ce08807b4b40f4dc5b',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.757486','2026-05-01 23:41:10.231307','2026-05-01 23:41:13.765859',NULL),(53,'MV-6243726',4,23,'MV-6243726',NULL,'2026-05-01 23:41:10.193551','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0x005bdaad3f11944e5b359ba765940827ddd62c929bd57c5f4824fe58c23ba2c2,0x02096c3de760150eabd1c6181b9bfb713b9ce41c9880d9bd372ee98fff1e85a8,0x7b9632562cb774076060149b5f0bb68b4195c578818d4ed192ce0022f30ce664,0xd63e728b5f15fd4167cb9275a8a22d2cdf224fee176937fc63fe5f23980ad14e,0x76f80a897bb1ce62ed699759c28d6ca46bbd833aa77dd3b3553711d85b69fd90',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.757549','2026-05-01 23:41:10.232614','2026-05-01 23:41:13.765902',NULL),(54,'MV-9326378',4,23,'MV-9326378',NULL,'2026-05-01 23:41:10.194507','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0x0ed812d69750c33e213ce488179e62400ca0282931c86e3f5d92f72532760688,0x47e9e3c51d36167d20a54add94d6cf9c53172c0b8ca187e4d670820f3723762d,0xad82aae0e1590c94c4881d4187961f5ee55c7e25fdcc8b1940d7f0a96e323b9a,0xd63e728b5f15fd4167cb9275a8a22d2cdf224fee176937fc63fe5f23980ad14e,0x76f80a897bb1ce62ed699759c28d6ca46bbd833aa77dd3b3553711d85b69fd90',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.757590','2026-05-01 23:41:10.233844','2026-05-01 23:41:13.766231',NULL),(55,'MV-3922292',4,23,'MV-3922292',NULL,'2026-05-01 23:41:10.195576','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0x4800a97dac2c30db583798a8d3256f2dbc9e4cd1007f396543d5855aa2e40a71,0xb685a0772f94ad43ea8aec09ce9ee45e5063948b9923147b18595ae9555ba53c,0x82c902b94dbf6c435a11907772d687d716e30dc2116685a45a17b2585f1cf75a,0x42241c10fd89ab02669e491a8df9c4e6ff4685b236ddd88ce0fa07dd79bb3d70,0x76f80a897bb1ce62ed699759c28d6ca46bbd833aa77dd3b3553711d85b69fd90',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.757631','2026-05-01 23:41:10.235410','2026-05-01 23:41:13.766285',NULL),(56,'MV-8734094',4,23,'MV-8734094',NULL,'2026-05-01 23:41:10.196803','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0x089462f422bffa6484475a3769b0f4c904cf48b3be5a93a244667de31597e3ab,0x4a8bae82fa408550f41bcb8e6fb10615502b46c71fac9039e356615a8547e64b,0x7b9632562cb774076060149b5f0bb68b4195c578818d4ed192ce0022f30ce664,0xd63e728b5f15fd4167cb9275a8a22d2cdf224fee176937fc63fe5f23980ad14e,0x76f80a897bb1ce62ed699759c28d6ca46bbd833aa77dd3b3553711d85b69fd90',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.757668','2026-05-01 23:41:10.237331','2026-05-01 23:41:13.766335',NULL),(57,'MV-1464216',4,23,'MV-1464216',NULL,'2026-05-01 23:41:10.198927','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0x22811fedf7448f80492d4ca35b04fbf667f1f34c3f1725124da1c657f3cccdfa,0xec83924a437263a05fa0d962d6de831510caa7f261485db9b9907b6f385f9590,0xad82aae0e1590c94c4881d4187961f5ee55c7e25fdcc8b1940d7f0a96e323b9a,0xd63e728b5f15fd4167cb9275a8a22d2cdf224fee176937fc63fe5f23980ad14e,0x76f80a897bb1ce62ed699759c28d6ca46bbd833aa77dd3b3553711d85b69fd90',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.757703','2026-05-01 23:41:10.239154','2026-05-01 23:41:13.766385',NULL),(58,'MV-6576341',4,23,'MV-6576341',NULL,'2026-05-01 23:41:10.200235','MANUFACTURED',NULL,'MANUFACTURER','2026-05-01 23:41:10.132871','2028-04-23 23:59:59.000000',NULL,'0x139d799b1d60870187699bead6fbefc562ab969882ba8e0619350bb665d0bf59,0xec83924a437263a05fa0d962d6de831510caa7f261485db9b9907b6f385f9590,0xad82aae0e1590c94c4881d4187961f5ee55c7e25fdcc8b1940d7f0a96e323b9a,0xd63e728b5f15fd4167cb9275a8a22d2cdf224fee176937fc63fe5f23980ad14e,0x76f80a897bb1ce62ed699759c28d6ca46bbd833aa77dd3b3553711d85b69fd90',_binary '','\n[Blockchain] Registered in TX: 0x4c96a5c7ec8c650e3f25b4ea55b488de760df3d910f38c40d1549470d1017d94 at block 2026-05-01T23:41:13.757742','2026-05-01 23:41:10.240921','2026-05-01 23:41:13.766430',NULL),(59,'CM200-3872236',5,24,'CM200-3872236',NULL,'2026-05-02 00:04:30.280480','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0xea053e3b8084f54e114b7a40736ce087de034282385a85a04f99cb6aed7d5640,0x0fe68a9bf3a05031ea0dfc09cbf837379e9071bf867df4781f6fd44538edf104,0x9cfbc32663516570c6e5f79757f62f6193bf65a1b221874d7457aa40b4995381,0xfd07bef0c66f39583c447862b3f724c26cb7d989a423f0ef552fcfe82b4863b3,0x266f4cc54504ad9dcf6980e07aceb83564dc36ad59ccafe9a71a9498559dbb66',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.752380','2026-05-02 00:04:30.333699','2026-05-02 00:04:37.759711',NULL),(60,'CM200-1895418',5,24,'CM200-1895418',NULL,'2026-05-02 00:04:30.283037','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0xcf3f9cdd608ebb46a4b44cbab1b523ee6066fb9d6e941d928bc527736e048b47,0x266f4cc54504ad9dcf6980e07aceb83564dc36ad59ccafe9a71a9498559dbb66',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.752561','2026-05-02 00:04:30.338541','2026-05-02 00:04:37.759917',NULL),(61,'CM200-9431676',5,24,'CM200-9431676',NULL,'2026-05-02 00:04:30.285623','SOLD',NULL,'CONSUMER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0x13d1f1c45f4e3663f3d504ec9969f0496597f64ce2c3a4a446a0d423a7fb0368,0x1a923aad22f64cbd1e12f86f4755f4c745d0957532b7df5d519f3dedf042df76,0xe5b9b1d83820c7eeaebb2b6039b59c58f52a42e23fcdf0435332015b05cbdc22,0x97aa2b8b70cf22cbccaafc72c7f0250596c002c2a071ad0ffc08b249e25fadfe,0xad9a4184686c1092457ef2e8e9892847af09afd3097b3d00d974c349cb654158',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.752637','2026-05-02 00:04:30.340680','2026-05-25 20:03:15.887143',NULL),(62,'CM200-0893835',5,24,'CM200-0893835',NULL,'2026-05-02 00:04:30.288260','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0x1cce22dba6feee6be029da47c4e12239a453dad327a18ff423d211daed475185,0x4a1aaf04c62de290f68945908553fbeaf52fed18339b712704e025c18f6639ff,0x6cedeb92db4fa49c0de8a0f5b3e3eea8fe00ab75431e289c3a900d9f1b2ebf20,0x97aa2b8b70cf22cbccaafc72c7f0250596c002c2a071ad0ffc08b249e25fadfe,0xad9a4184686c1092457ef2e8e9892847af09afd3097b3d00d974c349cb654158',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.752706','2026-05-02 00:04:30.342911','2026-05-02 00:04:37.760232',NULL),(63,'CM200-3510655',5,24,'CM200-3510655',NULL,'2026-05-02 00:04:30.290330','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0x56452048bebac475f9b600a917341746087d74637e1fce35534ab05cef92fa01,0x9cf0b1fa2a15c33e0e613bd6939dc934219219f94fa5c740d7e5582baf833b1f,0xcf25d5140cf1f68291831fc92eb5a27912eb67667d6874dd64342a77cd75fe35,0xa3a7e730adebd2fe02b9cc5f2bfd805f5a21626ee059a6d1504e55d343d386e5,0xad9a4184686c1092457ef2e8e9892847af09afd3097b3d00d974c349cb654158',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.752774','2026-05-02 00:04:30.345384','2026-05-02 00:04:37.760339',NULL),(64,'CM200-1424097',5,24,'CM200-1424097',NULL,'2026-05-02 00:04:30.292119','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0x1688e37456f6cd1d0adfc3902c8b82d79a207ff6a957b96350da1c59d3aa306c,0x62653159ebb6e7e0c0616385967b06abeb47712ee622a4ea68e37aa608e61722,0x6cedeb92db4fa49c0de8a0f5b3e3eea8fe00ab75431e289c3a900d9f1b2ebf20,0x97aa2b8b70cf22cbccaafc72c7f0250596c002c2a071ad0ffc08b249e25fadfe,0xad9a4184686c1092457ef2e8e9892847af09afd3097b3d00d974c349cb654158',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.752868','2026-05-02 00:04:30.348019','2026-05-02 00:04:37.760438',NULL),(65,'CM200-7972461',5,24,'CM200-7972461',NULL,'2026-05-02 00:04:30.295175','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0x317eecd72b685f0e7038087b3ffecc623912041c26fe53cd83894c36ff7f0c3a,0x4bf98f643cb04c487a7a4008d2c95a730a50472bf879dc5f1d305f0fea6e7f79,0xcf25d5140cf1f68291831fc92eb5a27912eb67667d6874dd64342a77cd75fe35,0xa3a7e730adebd2fe02b9cc5f2bfd805f5a21626ee059a6d1504e55d343d386e5,0xad9a4184686c1092457ef2e8e9892847af09afd3097b3d00d974c349cb654158',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.752942','2026-05-02 00:04:30.350703','2026-05-02 00:04:37.760531',NULL),(66,'CM200-0516388',5,24,'CM200-0516388',NULL,'2026-05-02 00:04:30.296883','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0x1e4c150aa9dfb445f08c91f70d2e8daf34debd8571ba10777fe75946daaba750,0x4a1aaf04c62de290f68945908553fbeaf52fed18339b712704e025c18f6639ff,0x6cedeb92db4fa49c0de8a0f5b3e3eea8fe00ab75431e289c3a900d9f1b2ebf20,0x97aa2b8b70cf22cbccaafc72c7f0250596c002c2a071ad0ffc08b249e25fadfe,0xad9a4184686c1092457ef2e8e9892847af09afd3097b3d00d974c349cb654158',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.753014','2026-05-02 00:04:30.353990','2026-05-02 00:04:37.760623',NULL),(67,'CM200-6066609',5,24,'CM200-6066609',NULL,'2026-05-02 00:04:30.298757','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0xaf6ec8f45b43ba7f760e0dd55403ba3b852207ed8bb4b895bdc9417365a0d5ff,0x9ac62e7350a9ed80ae9eddbe21b2b2deab8003ac6d9b40177eaa4257a71dffde,0xbbe6a0ca06f9d9fab30ab43286791cf55f4005ff145c55a004077474765d4130,0xfd07bef0c66f39583c447862b3f724c26cb7d989a423f0ef552fcfe82b4863b3,0x266f4cc54504ad9dcf6980e07aceb83564dc36ad59ccafe9a71a9498559dbb66',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.753092','2026-05-02 00:04:30.356537','2026-05-02 00:04:37.760709',NULL),(68,'CM200-9558844',5,24,'CM200-9558844',NULL,'2026-05-02 00:04:30.301635','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0x8b149e890ef4252d947cb2e7894a7fcfdb52d41f4cb7464ac04990fb12ea0512,0x2cacb9b1c41a233d9b390e7e8037ad52909d930c124e4c1545cb0b02854765f0,0x0dd4dadc5a6f83f4a8fcc86d2016e88c5b17ca94e302e7f5b3b53e92992be16c,0xa3a7e730adebd2fe02b9cc5f2bfd805f5a21626ee059a6d1504e55d343d386e5,0xad9a4184686c1092457ef2e8e9892847af09afd3097b3d00d974c349cb654158',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.753160','2026-05-02 00:04:30.360020','2026-05-02 00:04:37.760794',NULL),(69,'CM200-6584535',5,24,'CM200-6584535',NULL,'2026-05-02 00:04:30.304325','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0x115d45b1e9f194bc11e0c322dd5d60d52689e1c20470e245005345eca1d8fae7,0x1a923aad22f64cbd1e12f86f4755f4c745d0957532b7df5d519f3dedf042df76,0xe5b9b1d83820c7eeaebb2b6039b59c58f52a42e23fcdf0435332015b05cbdc22,0x97aa2b8b70cf22cbccaafc72c7f0250596c002c2a071ad0ffc08b249e25fadfe,0xad9a4184686c1092457ef2e8e9892847af09afd3097b3d00d974c349cb654158',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.753418','2026-05-02 00:04:30.362924','2026-05-02 00:04:37.760877',NULL),(70,'CM200-1684649',5,24,'CM200-1684649',NULL,'2026-05-02 00:04:30.306273','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0xc2b53398bb31011202a2010171a39b63030448dcc24757482f4009e4b3c63961,0x897e2a445c2b7b869f70d6df40c8b6a725dc79fbfc8a57fc996b482dfacb72cf,0x9cfbc32663516570c6e5f79757f62f6193bf65a1b221874d7457aa40b4995381,0xfd07bef0c66f39583c447862b3f724c26cb7d989a423f0ef552fcfe82b4863b3,0x266f4cc54504ad9dcf6980e07aceb83564dc36ad59ccafe9a71a9498559dbb66',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.753552','2026-05-02 00:04:30.365267','2026-05-02 00:04:37.760961',NULL),(71,'CM200-9446686',5,24,'CM200-9446686',NULL,'2026-05-02 00:04:30.308035','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0xeb50f7457428cc54e27e85fdf61ea1b7fa7eea8cdf5f553972df76314ce2b567,0x0fe68a9bf3a05031ea0dfc09cbf837379e9071bf867df4781f6fd44538edf104,0x9cfbc32663516570c6e5f79757f62f6193bf65a1b221874d7457aa40b4995381,0xfd07bef0c66f39583c447862b3f724c26cb7d989a423f0ef552fcfe82b4863b3,0x266f4cc54504ad9dcf6980e07aceb83564dc36ad59ccafe9a71a9498559dbb66',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.753662','2026-05-02 00:04:30.367840','2026-05-02 00:04:37.761067',NULL),(72,'CM200-6331407',5,24,'CM200-6331407',NULL,'2026-05-02 00:04:30.309992','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0x0aba95b6b0a37ecdaa5e703ca3d91c51a2de76646e05feab18e1ebc7e02541b6,0xde3f613494f8b287c9ebf35461993c2ab5f2c4e6cdbbfe79f8de76fa8f8764c4,0xe5b9b1d83820c7eeaebb2b6039b59c58f52a42e23fcdf0435332015b05cbdc22,0x97aa2b8b70cf22cbccaafc72c7f0250596c002c2a071ad0ffc08b249e25fadfe,0xad9a4184686c1092457ef2e8e9892847af09afd3097b3d00d974c349cb654158',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.753829','2026-05-02 00:04:30.369859','2026-05-02 00:04:37.761147',NULL),(73,'CM200-8032419',5,24,'CM200-8032419',NULL,'2026-05-02 00:04:30.312861','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0x9255de651f2bd78ceca726d7a9f655c56caaa325c882d70bf2d73d0fadba1010,0x012af3532235f3cc981b595b3e2b51072ac682820a6e58515147beb183afdac0,0xbbe6a0ca06f9d9fab30ab43286791cf55f4005ff145c55a004077474765d4130,0xfd07bef0c66f39583c447862b3f724c26cb7d989a423f0ef552fcfe82b4863b3,0x266f4cc54504ad9dcf6980e07aceb83564dc36ad59ccafe9a71a9498559dbb66',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.753910','2026-05-02 00:04:30.372161','2026-05-02 00:04:37.761704',NULL),(74,'CM200-7965651',5,24,'CM200-7965651',NULL,'2026-05-02 00:04:30.315246','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0xad98fcc8401e866249983c9f66e11b2db462d4833079c4bc7885372986b68b3d,0x9ac62e7350a9ed80ae9eddbe21b2b2deab8003ac6d9b40177eaa4257a71dffde,0xbbe6a0ca06f9d9fab30ab43286791cf55f4005ff145c55a004077474765d4130,0xfd07bef0c66f39583c447862b3f724c26cb7d989a423f0ef552fcfe82b4863b3,0x266f4cc54504ad9dcf6980e07aceb83564dc36ad59ccafe9a71a9498559dbb66',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.753990','2026-05-02 00:04:30.374627','2026-05-02 00:04:37.761798',NULL),(75,'CM200-9565180',5,24,'CM200-9565180',NULL,'2026-05-02 00:04:30.317433','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0x59831b303ef5fa13b2c48f99d77488e37985b22ac78fc3031ad7cee75e944fe8,0x8cd20297c4ce455c3d135eae738399ab3afc72c856c8cbf33132d6fbf82c51db,0x0dd4dadc5a6f83f4a8fcc86d2016e88c5b17ca94e302e7f5b3b53e92992be16c,0xa3a7e730adebd2fe02b9cc5f2bfd805f5a21626ee059a6d1504e55d343d386e5,0xad9a4184686c1092457ef2e8e9892847af09afd3097b3d00d974c349cb654158',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.754067','2026-05-02 00:04:30.376695','2026-05-02 00:04:37.761881',NULL),(76,'CM200-0537981',5,24,'CM200-0537981',NULL,'2026-05-02 00:04:30.319800','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0x4db187f0ca4ce94c291e6313add105bb493d3c10cbfe789bef1bf99956dbc415,0x9cf0b1fa2a15c33e0e613bd6939dc934219219f94fa5c740d7e5582baf833b1f,0xcf25d5140cf1f68291831fc92eb5a27912eb67667d6874dd64342a77cd75fe35,0xa3a7e730adebd2fe02b9cc5f2bfd805f5a21626ee059a6d1504e55d343d386e5,0xad9a4184686c1092457ef2e8e9892847af09afd3097b3d00d974c349cb654158',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.754135','2026-05-02 00:04:30.378551','2026-05-02 00:04:37.761968',NULL),(77,'CM200-8559910',5,24,'CM200-8559910',NULL,'2026-05-02 00:04:30.321642','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0x347b899d49baac86f7b86e559d4a3db2653d913b9d627a389128388a70f8a18f,0x4bf98f643cb04c487a7a4008d2c95a730a50472bf879dc5f1d305f0fea6e7f79,0xcf25d5140cf1f68291831fc92eb5a27912eb67667d6874dd64342a77cd75fe35,0xa3a7e730adebd2fe02b9cc5f2bfd805f5a21626ee059a6d1504e55d343d386e5,0xad9a4184686c1092457ef2e8e9892847af09afd3097b3d00d974c349cb654158',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.754201','2026-05-02 00:04:30.380789','2026-05-02 00:04:37.762044',NULL),(78,'CM200-6447024',5,24,'CM200-6447024',NULL,'2026-05-02 00:04:30.323269','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0xc797e8159fd243a63686763c50d25d8ce4a1f6861634096fd8a736f403014fdb,0x897e2a445c2b7b869f70d6df40c8b6a725dc79fbfc8a57fc996b482dfacb72cf,0x9cfbc32663516570c6e5f79757f62f6193bf65a1b221874d7457aa40b4995381,0xfd07bef0c66f39583c447862b3f724c26cb7d989a423f0ef552fcfe82b4863b3,0x266f4cc54504ad9dcf6980e07aceb83564dc36ad59ccafe9a71a9498559dbb66',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.754245','2026-05-02 00:04:30.383125','2026-05-02 00:04:37.762130',NULL),(79,'CM200-7135961',5,24,'CM200-7135961',NULL,'2026-05-02 00:04:30.324711','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0x7afdd06f2db7eb724d7dc2209309ce119debe0028113750b2d416df71f35a1de,0x8cd20297c4ce455c3d135eae738399ab3afc72c856c8cbf33132d6fbf82c51db,0x0dd4dadc5a6f83f4a8fcc86d2016e88c5b17ca94e302e7f5b3b53e92992be16c,0xa3a7e730adebd2fe02b9cc5f2bfd805f5a21626ee059a6d1504e55d343d386e5,0xad9a4184686c1092457ef2e8e9892847af09afd3097b3d00d974c349cb654158',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.754287','2026-05-02 00:04:30.385488','2026-05-02 00:04:37.762203',NULL),(80,'CM200-1716402',5,24,'CM200-1716402',NULL,'2026-05-02 00:04:30.327049','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0xa97b33d441e12095e4cfb6cddbecd68538c7ac8bb6f03d5631cb5975800b0537,0x012af3532235f3cc981b595b3e2b51072ac682820a6e58515147beb183afdac0,0xbbe6a0ca06f9d9fab30ab43286791cf55f4005ff145c55a004077474765d4130,0xfd07bef0c66f39583c447862b3f724c26cb7d989a423f0ef552fcfe82b4863b3,0x266f4cc54504ad9dcf6980e07aceb83564dc36ad59ccafe9a71a9498559dbb66',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.754328','2026-05-02 00:04:30.387653','2026-05-02 00:04:37.762281',NULL),(81,'CM200-8670250',5,24,'CM200-8670250',NULL,'2026-05-02 00:04:30.329073','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0x079067ef2db7222031746d90f98f51bed344146fd0b7649b2215314adccf7e72,0xde3f613494f8b287c9ebf35461993c2ab5f2c4e6cdbbfe79f8de76fa8f8764c4,0xe5b9b1d83820c7eeaebb2b6039b59c58f52a42e23fcdf0435332015b05cbdc22,0x97aa2b8b70cf22cbccaafc72c7f0250596c002c2a071ad0ffc08b249e25fadfe,0xad9a4184686c1092457ef2e8e9892847af09afd3097b3d00d974c349cb654158',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.754371','2026-05-02 00:04:30.389855','2026-05-02 00:04:37.762353',NULL),(82,'CM200-2677235',5,24,'CM200-2677235',NULL,'2026-05-02 00:04:30.330661','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0x1727ab5b5553f033ac0e2efc39dd001d3c90b013ef7aaebd60a38b428aefdc7f,0x62653159ebb6e7e0c0616385967b06abeb47712ee622a4ea68e37aa608e61722,0x6cedeb92db4fa49c0de8a0f5b3e3eea8fe00ab75431e289c3a900d9f1b2ebf20,0x97aa2b8b70cf22cbccaafc72c7f0250596c002c2a071ad0ffc08b249e25fadfe,0xad9a4184686c1092457ef2e8e9892847af09afd3097b3d00d974c349cb654158',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.754414','2026-05-02 00:04:30.392654','2026-05-02 00:04:37.762448',NULL),(83,'CM200-8676776',5,24,'CM200-8676776',NULL,'2026-05-02 00:04:30.332531','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:04:30.245264','2029-05-25 23:59:59.000000',NULL,'0x86d6b389b3b9ca39ded44cb1aba9e3ffbb60412d030d0e1c3ca1b5fab4c39775,0x2cacb9b1c41a233d9b390e7e8037ad52909d930c124e4c1545cb0b02854765f0,0x0dd4dadc5a6f83f4a8fcc86d2016e88c5b17ca94e302e7f5b3b53e92992be16c,0xa3a7e730adebd2fe02b9cc5f2bfd805f5a21626ee059a6d1504e55d343d386e5,0xad9a4184686c1092457ef2e8e9892847af09afd3097b3d00d974c349cb654158',_binary '','\n[Blockchain] Registered in TX: 0x9d1f3ab5083fb055ab927223f202a93454fc751fc33025ad625d14d04b23c5b9 at block 2026-05-02T00:04:37.754456','2026-05-02 00:04:30.394948','2026-05-02 00:04:37.762522',NULL),(84,'ZT500-6472110',6,22,'ZT500-6472110',NULL,'2026-05-02 00:08:15.355351','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:08:15.341014','2029-04-10 23:59:59.000000',NULL,'0x03555c3c6c6056ab3b4eb0e85de166a2f0d4bc846be6675d164280dfcdc7da1b,0xc61d5d5294bf079976d646b47165d0671b7e1ee7f457e3c5a4786e986746ac30,0x44cc4a8cf09d060b88dab80a4c315a3a7b3f661c4df00b002b9543a38f25918a,0xef03caf84e242c4d13cffd0f8d873b59a665bf506301a9ad11230b375b524f9d',_binary '','\n[Blockchain] Registered in TX: 0xcf28c7f6d25b233fe7c205e044a66d63fdf5102ea47d514116be8ff4519907b8 at block 2026-05-02T00:08:25.499450','2026-05-02 00:08:15.378442','2026-05-02 00:08:25.506111',NULL),(85,'ZT500-0638532',6,22,'ZT500-0638532',NULL,'2026-05-02 00:08:15.358650','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:08:15.341014','2029-04-10 23:59:59.000000',NULL,'0x4e460a38de8f7583ca06598c8eabf180f990c7d5aaca42bd78b4e1201696efec,0x0596490fc43dda1312d058e6e4e53364783ae970cac0b8f9c1716822a83ad1b0,0x44cc4a8cf09d060b88dab80a4c315a3a7b3f661c4df00b002b9543a38f25918a,0xef03caf84e242c4d13cffd0f8d873b59a665bf506301a9ad11230b375b524f9d',_binary '','\n[Blockchain] Registered in TX: 0xcf28c7f6d25b233fe7c205e044a66d63fdf5102ea47d514116be8ff4519907b8 at block 2026-05-02T00:08:25.499625','2026-05-02 00:08:15.381278','2026-05-02 00:08:25.506273',NULL),(86,'ZT500-2015083',6,22,'ZT500-2015083',NULL,'2026-05-02 00:08:15.361216','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:08:15.341014','2029-04-10 23:59:59.000000',NULL,'0x2745866bd820bfd37f5de680fa4c0c5f5bc63ac9ab865eb7bc3500f82b5de0a9,0x0596490fc43dda1312d058e6e4e53364783ae970cac0b8f9c1716822a83ad1b0,0x44cc4a8cf09d060b88dab80a4c315a3a7b3f661c4df00b002b9543a38f25918a,0xef03caf84e242c4d13cffd0f8d873b59a665bf506301a9ad11230b375b524f9d',_binary '','\n[Blockchain] Registered in TX: 0xcf28c7f6d25b233fe7c205e044a66d63fdf5102ea47d514116be8ff4519907b8 at block 2026-05-02T00:08:25.500157','2026-05-02 00:08:15.383380','2026-05-02 00:08:25.506421',NULL),(87,'ZT500-1324143',6,22,'ZT500-1324143',NULL,'2026-05-02 00:08:15.363604','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:08:15.341014','2029-04-10 23:59:59.000000',NULL,'0x8b479a4b1d9ec1b1f27143b1cd71ddc324d309fa3b654f46601f1ff0515e3135,0x9c72724372dbc5b3de57283d9f5e38f657ddbc031b7c4f1c7ecf67897694e1c1,0xd90f6a943c01265c6cbc939e70f0f15c5fe8fa471e393742b7f2713fc2c6c444,0xef03caf84e242c4d13cffd0f8d873b59a665bf506301a9ad11230b375b524f9d',_binary '','\n[Blockchain] Registered in TX: 0xcf28c7f6d25b233fe7c205e044a66d63fdf5102ea47d514116be8ff4519907b8 at block 2026-05-02T00:08:25.500327','2026-05-02 00:08:15.386232','2026-05-02 00:08:25.506619',NULL),(88,'ZT500-3617030',6,22,'ZT500-3617030',NULL,'2026-05-02 00:08:15.367295','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:08:15.341014','2029-04-10 23:59:59.000000',NULL,'0xf79f3f5e85aa3cfab80c5dcf7b016781fedc28c48f9ad093b531b280c6c293b4,0xcd494cadd815f9dce6a7d0ffec8bc1fd2b2c35981727bfcff777bae20efa15d3',_binary '','\n[Blockchain] Registered in TX: 0xcf28c7f6d25b233fe7c205e044a66d63fdf5102ea47d514116be8ff4519907b8 at block 2026-05-02T00:08:25.500377','2026-05-02 00:08:15.388498','2026-05-02 00:08:25.506783',NULL),(89,'ZT500-2927046',6,22,'ZT500-2927046',NULL,'2026-05-02 00:08:15.369479','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:08:15.341014','2029-04-10 23:59:59.000000',NULL,'0x97b385cd2c36f649b09ccf16accd9da6dd3e28b81823ec02c5c9779ee209835e,0x9c72724372dbc5b3de57283d9f5e38f657ddbc031b7c4f1c7ecf67897694e1c1,0xd90f6a943c01265c6cbc939e70f0f15c5fe8fa471e393742b7f2713fc2c6c444,0xef03caf84e242c4d13cffd0f8d873b59a665bf506301a9ad11230b375b524f9d',_binary '','\n[Blockchain] Registered in TX: 0xcf28c7f6d25b233fe7c205e044a66d63fdf5102ea47d514116be8ff4519907b8 at block 2026-05-02T00:08:25.500417','2026-05-02 00:08:15.390486','2026-05-02 00:08:25.506927',NULL),(90,'ZT500-3501200',6,22,'ZT500-3501200',NULL,'2026-05-02 00:08:15.371701','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:08:15.341014','2029-04-10 23:59:59.000000',NULL,'0x552b50da3cce15e8bea0ff2e8b6f9e262245b6be9dffe8d3be1cccd2d5e865fb,0xb67260680a33eb34cef7de402dadbf7d07e2af4de4292e0a132872ea5b4963dc,0xd90f6a943c01265c6cbc939e70f0f15c5fe8fa471e393742b7f2713fc2c6c444,0xef03caf84e242c4d13cffd0f8d873b59a665bf506301a9ad11230b375b524f9d',_binary '','\n[Blockchain] Registered in TX: 0xcf28c7f6d25b233fe7c205e044a66d63fdf5102ea47d514116be8ff4519907b8 at block 2026-05-02T00:08:25.500481','2026-05-02 00:08:15.392717','2026-05-02 00:08:25.507093',NULL),(91,'ZT500-0160418',6,22,'ZT500-0160418',NULL,'2026-05-02 00:08:15.373866','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:08:15.341014','2029-04-10 23:59:59.000000',NULL,'0x54489f99b4e35bb9e459c6ddf5954cc75e71bf6534c211a05f3a0550d32ff031,0xb67260680a33eb34cef7de402dadbf7d07e2af4de4292e0a132872ea5b4963dc,0xd90f6a943c01265c6cbc939e70f0f15c5fe8fa471e393742b7f2713fc2c6c444,0xef03caf84e242c4d13cffd0f8d873b59a665bf506301a9ad11230b375b524f9d',_binary '','\n[Blockchain] Registered in TX: 0xcf28c7f6d25b233fe7c205e044a66d63fdf5102ea47d514116be8ff4519907b8 at block 2026-05-02T00:08:25.500520','2026-05-02 00:08:15.394617','2026-05-02 00:08:25.507233',NULL),(92,'ZT500-4987808',6,22,'ZT500-4987808',NULL,'2026-05-02 00:08:15.376050','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:08:15.341014','2029-04-10 23:59:59.000000',NULL,'0xf846dcd95651ae7eb686dfd5c15425c68475b78da2859d76cea583edeb78ca78,0xcd494cadd815f9dce6a7d0ffec8bc1fd2b2c35981727bfcff777bae20efa15d3',_binary '','\n[Blockchain] Registered in TX: 0xcf28c7f6d25b233fe7c205e044a66d63fdf5102ea47d514116be8ff4519907b8 at block 2026-05-02T00:08:25.500570','2026-05-02 00:08:15.396541','2026-05-02 00:08:25.507346',NULL),(93,'ZT500-2717519',6,22,'ZT500-2717519',NULL,'2026-05-02 00:08:15.378160','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 00:08:15.341014','2029-04-10 23:59:59.000000',NULL,'0x1e6247348232ea72c585df3af8972a38d07d600d75273f9436f1f669d7991429,0xc61d5d5294bf079976d646b47165d0671b7e1ee7f457e3c5a4786e986746ac30,0x44cc4a8cf09d060b88dab80a4c315a3a7b3f661c4df00b002b9543a38f25918a,0xef03caf84e242c4d13cffd0f8d873b59a665bf506301a9ad11230b375b524f9d',_binary '','\n[Blockchain] Registered in TX: 0xcf28c7f6d25b233fe7c205e044a66d63fdf5102ea47d514116be8ff4519907b8 at block 2026-05-02T00:08:25.500648','2026-05-02 00:08:15.398601','2026-05-02 00:08:25.507467',NULL),(94,'KN-7730700',7,20,'KN-7730700',NULL,'2026-05-02 22:11:59.872765','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:11:59.830416','2028-05-14 23:59:59.000000',NULL,'0xc6b8607d02bf1370e3aa7a732091c206cd4058bf631b9b4bc627028b8bc38daa,0xbb8a459a4be898124343e0028c53d5bd2112a4ee5319420e112a1c8943ec7eaa,0x8c1cdbed8e8acad7caa3dd00b29ce36ac68961b5d0501a175898c068cba56348,0xb517e44de72c2d92ff51935f6d332c1c06a67edd4e3308afc9c0a67f617bd522',_binary '','\n[Blockchain] Registered in TX: 0xb700d81a2dae2b48ae7c4bb1489a0ebcaf1d494706cdb01176b976b58d54b993 at block 2026-05-02T22:12:25.970993','2026-05-02 22:11:59.897992','2026-05-02 22:12:25.976328',NULL),(95,'KN-8376219',7,20,'KN-8376219',NULL,'2026-05-02 22:11:59.874233','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:11:59.830416','2028-05-14 23:59:59.000000',NULL,'0xd4da37c286168663904bdbfc0378abf20ea57f1da4c00ae02e688a707d009f01,0x1404e54453e0f1ddbcb40cf80c504c7201829e35c0a2726cc0b91a1aae8cf898,0x4dd64adfbcba370200848d121ba63ef3bee24286e31d513e6523b070bb865a5f,0x7eadfef0080234b4716e5cdfc4ee9854bf34b03d4758a559a268f6297b3eb19d',_binary '','\n[Blockchain] Registered in TX: 0xb700d81a2dae2b48ae7c4bb1489a0ebcaf1d494706cdb01176b976b58d54b993 at block 2026-05-02T22:12:25.971159','2026-05-02 22:11:59.902692','2026-05-02 22:12:25.976442',NULL),(96,'KN-5919379',7,20,'KN-5919379',NULL,'2026-05-02 22:11:59.876365','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:11:59.830416','2028-05-14 23:59:59.000000',NULL,'0x5d12ba7cdd0188e36ae9e4a9b8afaad2e9b21dd334a23ce3f35a799081ec185e,0xceecac75d9fae05974bbbd254185b7e79d240ec872f90479d01524820389b3d5,0x1048c16021315e3c300597ccd35d275613d939612e4aa1637bcc8202d456be54,0xb517e44de72c2d92ff51935f6d332c1c06a67edd4e3308afc9c0a67f617bd522',_binary '','\n[Blockchain] Registered in TX: 0xb700d81a2dae2b48ae7c4bb1489a0ebcaf1d494706cdb01176b976b58d54b993 at block 2026-05-02T22:12:25.971184','2026-05-02 22:11:59.904403','2026-05-02 22:12:25.976542',NULL),(97,'KN-9879940',7,20,'KN-9879940',NULL,'2026-05-02 22:11:59.879245','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:11:59.830416','2028-05-14 23:59:59.000000',NULL,'0x8d3aba8b070b2ded80bfbb33f97da7b38a601eda1e52b61404b0a27616014a2d,0x43931aaf6e4946801a0d2d9cd8d74cf2b698a7306bff9c36b355661de364c1d7,0x8c1cdbed8e8acad7caa3dd00b29ce36ac68961b5d0501a175898c068cba56348,0xb517e44de72c2d92ff51935f6d332c1c06a67edd4e3308afc9c0a67f617bd522',_binary '','\n[Blockchain] Registered in TX: 0xb700d81a2dae2b48ae7c4bb1489a0ebcaf1d494706cdb01176b976b58d54b993 at block 2026-05-02T22:12:25.971214','2026-05-02 22:11:59.905932','2026-05-02 22:12:25.976605',NULL),(98,'KN-7341370',7,20,'KN-7341370',NULL,'2026-05-02 22:11:59.881328','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:11:59.830416','2028-05-14 23:59:59.000000',NULL,'0xee8ad7aa4eb2395a2eb25ddfa0263bcb2569a46034c552bcd1a35714ac4a53d5,0xac07ded2d002056f099cb9e6f8951d72285da4c355abe71291604507e0a1f3ff,0x7eadfef0080234b4716e5cdfc4ee9854bf34b03d4758a559a268f6297b3eb19d',_binary '','\n[Blockchain] Registered in TX: 0xb700d81a2dae2b48ae7c4bb1489a0ebcaf1d494706cdb01176b976b58d54b993 at block 2026-05-02T22:12:25.971237','2026-05-02 22:11:59.907390','2026-05-02 22:12:25.976660',NULL),(99,'KN-6653657',7,20,'KN-6653657',NULL,'2026-05-02 22:11:59.883628','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:11:59.830416','2028-05-14 23:59:59.000000',NULL,'0xe2ff13d88e08c9dca7b3d38eb7ed9bbddee8f2c61105e40e7d4d35934a2f8cb4,0x1d97c8a69c5a929b74e6c7bfaecb4e53e49b62a16d01417cd403abec055dca7d,0x4dd64adfbcba370200848d121ba63ef3bee24286e31d513e6523b070bb865a5f,0x7eadfef0080234b4716e5cdfc4ee9854bf34b03d4758a559a268f6297b3eb19d',_binary '','\n[Blockchain] Registered in TX: 0xb700d81a2dae2b48ae7c4bb1489a0ebcaf1d494706cdb01176b976b58d54b993 at block 2026-05-02T22:12:25.971265','2026-05-02 22:11:59.909025','2026-05-02 22:12:25.976714',NULL),(100,'KN-4250807',7,20,'KN-4250807',NULL,'2026-05-02 22:11:59.885696','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:11:59.830416','2028-05-14 23:59:59.000000',NULL,'0x6f47cc7449d9a9e28adc70676186d77d988d21051f6acebc05d8bce19f874579,0x080630dd45df4462666425cfcff37358db9465557c93ab06ef48e2c3f40358c0,0x1048c16021315e3c300597ccd35d275613d939612e4aa1637bcc8202d456be54,0xb517e44de72c2d92ff51935f6d332c1c06a67edd4e3308afc9c0a67f617bd522',_binary '','\n[Blockchain] Registered in TX: 0xb700d81a2dae2b48ae7c4bb1489a0ebcaf1d494706cdb01176b976b58d54b993 at block 2026-05-02T22:12:25.971288','2026-05-02 22:11:59.910470','2026-05-02 22:12:25.976767',NULL),(101,'KN-5364254',7,20,'KN-5364254',NULL,'2026-05-02 22:11:59.888061','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:11:59.830416','2028-05-14 23:59:59.000000',NULL,'0xa517ba54169e9eb55d61b182912aab79f835dc9b74944ecdb05678a230891533,0xbb8a459a4be898124343e0028c53d5bd2112a4ee5319420e112a1c8943ec7eaa,0x8c1cdbed8e8acad7caa3dd00b29ce36ac68961b5d0501a175898c068cba56348,0xb517e44de72c2d92ff51935f6d332c1c06a67edd4e3308afc9c0a67f617bd522',_binary '','\n[Blockchain] Registered in TX: 0xb700d81a2dae2b48ae7c4bb1489a0ebcaf1d494706cdb01176b976b58d54b993 at block 2026-05-02T22:12:25.971322','2026-05-02 22:11:59.911929','2026-05-02 22:12:25.976820',NULL),(102,'KN-4750978',7,20,'KN-4750978',NULL,'2026-05-02 22:11:59.889709','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:11:59.830416','2028-05-14 23:59:59.000000',NULL,'0x681d2470f49fefa886e02cb81c39ab63e4a7cbe87deb71d37852167144017752,0x080630dd45df4462666425cfcff37358db9465557c93ab06ef48e2c3f40358c0,0x1048c16021315e3c300597ccd35d275613d939612e4aa1637bcc8202d456be54,0xb517e44de72c2d92ff51935f6d332c1c06a67edd4e3308afc9c0a67f617bd522',_binary '','\n[Blockchain] Registered in TX: 0xb700d81a2dae2b48ae7c4bb1489a0ebcaf1d494706cdb01176b976b58d54b993 at block 2026-05-02T22:12:25.971344','2026-05-02 22:11:59.913367','2026-05-02 22:12:25.976872',NULL),(103,'KN-4744071',7,20,'KN-4744071',NULL,'2026-05-02 22:11:59.891085','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:11:59.830416','2028-05-14 23:59:59.000000',NULL,'0x3c7053987d87c53a8784b45064ffa2d259bb6bcce20d35fc88a4c0e26173036b,0xceecac75d9fae05974bbbd254185b7e79d240ec872f90479d01524820389b3d5,0x1048c16021315e3c300597ccd35d275613d939612e4aa1637bcc8202d456be54,0xb517e44de72c2d92ff51935f6d332c1c06a67edd4e3308afc9c0a67f617bd522',_binary '','\n[Blockchain] Registered in TX: 0xb700d81a2dae2b48ae7c4bb1489a0ebcaf1d494706cdb01176b976b58d54b993 at block 2026-05-02T22:12:25.971371','2026-05-02 22:11:59.914940','2026-05-02 22:12:25.976927',NULL),(104,'KN-1334518',7,20,'KN-1334518',NULL,'2026-05-02 22:11:59.892391','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:11:59.830416','2028-05-14 23:59:59.000000',NULL,'0xe79b506c39c5e76eae05a6685f084d0910fdb19cc87abc4b2f623e9b30f61b7c,0xac07ded2d002056f099cb9e6f8951d72285da4c355abe71291604507e0a1f3ff,0x7eadfef0080234b4716e5cdfc4ee9854bf34b03d4758a559a268f6297b3eb19d',_binary '','\n[Blockchain] Registered in TX: 0xb700d81a2dae2b48ae7c4bb1489a0ebcaf1d494706cdb01176b976b58d54b993 at block 2026-05-02T22:12:25.971393','2026-05-02 22:11:59.916858','2026-05-02 22:12:25.976997',NULL),(105,'KN-8239607',7,20,'KN-8239607',NULL,'2026-05-02 22:11:59.893983','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:11:59.830416','2028-05-14 23:59:59.000000',NULL,'0xdde6571f233edd145eb41e59e9b8503ff2b7e4a4a8f9f97eaea97297e9c11094,0x1d97c8a69c5a929b74e6c7bfaecb4e53e49b62a16d01417cd403abec055dca7d,0x4dd64adfbcba370200848d121ba63ef3bee24286e31d513e6523b070bb865a5f,0x7eadfef0080234b4716e5cdfc4ee9854bf34b03d4758a559a268f6297b3eb19d',_binary '','\n[Blockchain] Registered in TX: 0xb700d81a2dae2b48ae7c4bb1489a0ebcaf1d494706cdb01176b976b58d54b993 at block 2026-05-02T22:12:25.971420','2026-05-02 22:11:59.918452','2026-05-02 22:12:25.977051',NULL),(106,'KN-8383070',7,20,'KN-8383070',NULL,'2026-05-02 22:11:59.895702','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:11:59.830416','2028-05-14 23:59:59.000000',NULL,'0xc9d60b67547bec33c728bdcc26bc891e4d72a7ad85cee4c0e035061dedc18ca2,0x1404e54453e0f1ddbcb40cf80c504c7201829e35c0a2726cc0b91a1aae8cf898,0x4dd64adfbcba370200848d121ba63ef3bee24286e31d513e6523b070bb865a5f,0x7eadfef0080234b4716e5cdfc4ee9854bf34b03d4758a559a268f6297b3eb19d',_binary '','\n[Blockchain] Registered in TX: 0xb700d81a2dae2b48ae7c4bb1489a0ebcaf1d494706cdb01176b976b58d54b993 at block 2026-05-02T22:12:25.971442','2026-05-02 22:11:59.920058','2026-05-02 22:12:25.977129',NULL),(107,'KN-8671958',7,20,'KN-8671958',NULL,'2026-05-02 22:11:59.896872','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:11:59.830416','2028-05-14 23:59:59.000000',NULL,'0x8c93eeb859cbe4a4c673decaec690ae20bab47129bcd793c75632ecf3b75d311,0x43931aaf6e4946801a0d2d9cd8d74cf2b698a7306bff9c36b355661de364c1d7,0x8c1cdbed8e8acad7caa3dd00b29ce36ac68961b5d0501a175898c068cba56348,0xb517e44de72c2d92ff51935f6d332c1c06a67edd4e3308afc9c0a67f617bd522',_binary '','\n[Blockchain] Registered in TX: 0xb700d81a2dae2b48ae7c4bb1489a0ebcaf1d494706cdb01176b976b58d54b993 at block 2026-05-02T22:12:25.971468','2026-05-02 22:11:59.921865','2026-05-02 22:12:25.977183',NULL),(108,'AN500-6071668',8,28,'AN500-6071668',NULL,'2026-05-02 22:22:22.460013','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0x79fcf17cd4f510ab6a688756fb7ef84e35e2a23e87e579da6210787e5046323a,0x6d64516ca4ad13231b88e92fa1d0d22b1260f3f5cecd9ebc79ad90f940262bf2,0xd09f037295d46d7bf524dc9f437d6096d63a599192f0344668dc6b1c36d9f75b,0x3c3d53568214662a1f39257172692d32bc6c61c805e0df134d1b6f8c86fa5e13,0xbfe58176d50e6a461e5b468360cca6800b517a84057b72d2138ddcea97bd89c3',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.930477','2026-05-02 22:22:22.523747','2026-05-02 22:22:24.936999',NULL),(109,'AN500-4515951',8,28,'AN500-4515951',NULL,'2026-05-02 22:22:22.463065','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0xc83d95347f26aab108b426c278d3add868bfadb384cd9f15bcb3883a713e9bcf,0x087765ed9d9dc4251f621a778da3a4631d044a1a0755a0e17101f224d6291a75,0x187ebcbc5ded8505074229851ee9d596738f36a801782bbf1c1fb617b417165c,0x7bf97ffe47ca4ef1adcb729d93fc61ec21eefb2f949f993c15c312b8e1794416',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.930647','2026-05-02 22:22:22.532387','2026-05-02 22:22:24.937133',NULL),(110,'AN500-7220514',8,28,'AN500-7220514',NULL,'2026-05-02 22:22:22.465470','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0xc945557e428c6724e5e676245ec9229806b408f9d7af6e87538ec3c70325c84c,0x087765ed9d9dc4251f621a778da3a4631d044a1a0755a0e17101f224d6291a75,0x187ebcbc5ded8505074229851ee9d596738f36a801782bbf1c1fb617b417165c,0x7bf97ffe47ca4ef1adcb729d93fc61ec21eefb2f949f993c15c312b8e1794416',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.930725','2026-05-02 22:22:22.536321','2026-05-02 22:22:24.937265',NULL),(111,'AN500-6318450',8,28,'AN500-6318450',NULL,'2026-05-02 22:22:22.467925','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0x361c5b92786478fa6cb08f823613c0d6228e99f7bf2216324b202f30a41bb4d1,0xb75936f738b29e27a91df62f582c71a7e3fc7fbeec2d2a1117a67da6c1d8d157,0x0a07a9c22942a02100a3fc584c84b7419de178a6e3da841c650fdc83dc748a78,0xec1825cee8c69e89dc3d40c4cd40bcb8d3544a95cbe133231e1979f0aa29089d,0xbfe58176d50e6a461e5b468360cca6800b517a84057b72d2138ddcea97bd89c3',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.930788','2026-05-02 22:22:22.539883','2026-05-02 22:22:24.937346',NULL),(112,'AN500-6202402',8,28,'AN500-6202402',NULL,'2026-05-02 22:22:22.470152','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0x1ad1bb87f69dced98d6f0370f821f60124f70957ed2c7bc868e0f04ee0a83e5a,0xd9c5e2deba87ee77ab0f17e358867a37674a19754c4e0ef89af149b5dd73fbaa,0xbb840029da78c0735478298af8078650e7918899865d386a84ab2381b3186116,0xec1825cee8c69e89dc3d40c4cd40bcb8d3544a95cbe133231e1979f0aa29089d,0xbfe58176d50e6a461e5b468360cca6800b517a84057b72d2138ddcea97bd89c3',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.930863','2026-05-02 22:22:22.544035','2026-05-02 22:22:24.937426',NULL),(113,'AN500-2724549',8,28,'AN500-2724549',NULL,'2026-05-02 22:22:22.471989','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0x3492e4aae3069477bf16ad14c513f1afe2f56177e3ea348bc87640fe54add3c2,0xe4b3e30f0334a550fc50d9c3f76c37ea6f33263ff2d4e11ab096b2993fa6eace,0x7bf97ffe47ca4ef1adcb729d93fc61ec21eefb2f949f993c15c312b8e1794416',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.930926','2026-05-02 22:22:22.547417','2026-05-02 22:22:24.937504',NULL),(114,'AN500-3708820',8,28,'AN500-3708820',NULL,'2026-05-02 22:22:22.474030','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0xd87e5c0a7d62ce9f8f6c275ab212e768131dd0d28cee23ad46c4cd7a184531cd,0xeddb6078c92f77136572d61c6cfe272015b0a0eae469799c6333277a4b4f7a85,0xe4b3e30f0334a550fc50d9c3f76c37ea6f33263ff2d4e11ab096b2993fa6eace,0x7bf97ffe47ca4ef1adcb729d93fc61ec21eefb2f949f993c15c312b8e1794416',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.930990','2026-05-02 22:22:22.551040','2026-05-02 22:22:24.937692',NULL),(115,'AN500-0759002',8,28,'AN500-0759002',NULL,'2026-05-02 22:22:22.479497','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0x28dc60a2518915faaa3a650f4bcffd62a73e23d4f90a725406108da101186442,0xd9c5e2deba87ee77ab0f17e358867a37674a19754c4e0ef89af149b5dd73fbaa,0xbb840029da78c0735478298af8078650e7918899865d386a84ab2381b3186116,0xec1825cee8c69e89dc3d40c4cd40bcb8d3544a95cbe133231e1979f0aa29089d,0xbfe58176d50e6a461e5b468360cca6800b517a84057b72d2138ddcea97bd89c3',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.931084','2026-05-02 22:22:22.553922','2026-05-02 22:22:24.937788',NULL),(116,'AN500-2112845',8,28,'AN500-2112845',NULL,'2026-05-02 22:22:22.482805','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0x66c5e455b51a53604f8d8f2680a814892ec1ad4c57311be2672056699bdc8ab3,0xbf103b0724250180e4cf3848e5095699fdf1e8877b4d43e14718f5f963bb1c3b,0xd09f037295d46d7bf524dc9f437d6096d63a599192f0344668dc6b1c36d9f75b,0x3c3d53568214662a1f39257172692d32bc6c61c805e0df134d1b6f8c86fa5e13,0xbfe58176d50e6a461e5b468360cca6800b517a84057b72d2138ddcea97bd89c3',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.931166','2026-05-02 22:22:22.556479','2026-05-02 22:22:24.937868',NULL),(117,'AN500-7056489',8,28,'AN500-7056489',NULL,'2026-05-02 22:22:22.485381','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0x56794e8721a3898d383dd7636e6bcfdeb514b24b6e27401b860b34ad50576379,0xbf103b0724250180e4cf3848e5095699fdf1e8877b4d43e14718f5f963bb1c3b,0xd09f037295d46d7bf524dc9f437d6096d63a599192f0344668dc6b1c36d9f75b,0x3c3d53568214662a1f39257172692d32bc6c61c805e0df134d1b6f8c86fa5e13,0xbfe58176d50e6a461e5b468360cca6800b517a84057b72d2138ddcea97bd89c3',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.931229','2026-05-02 22:22:22.558933','2026-05-02 22:22:24.937948',NULL),(118,'AN500-3618389',8,28,'AN500-3618389',NULL,'2026-05-02 22:22:22.487924','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0x83abbc169b30d1605344a7bcbc4534f9d5f08d92118e626f71129ee1c70b2ef9,0xa91bde0d06eab63b69d6e370fbda2b635d46db21bee9bd1d2e8bc13f1379c33a,0xdbd4d460d2cac854fd737d10471351024c3f472a29cbe7617ec4d58726d10bb9,0x3c3d53568214662a1f39257172692d32bc6c61c805e0df134d1b6f8c86fa5e13,0xbfe58176d50e6a461e5b468360cca6800b517a84057b72d2138ddcea97bd89c3',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.931298','2026-05-02 22:22:22.561590','2026-05-02 22:22:24.938029',NULL),(119,'AN500-9277782',8,28,'AN500-9277782',NULL,'2026-05-02 22:22:22.490747','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0x50edf37d9029e13abbfd6a0cd7a76a047f007a2135d9dd6ad8355be694bfee3e,0x1a528c00238bb8c50307137ebe395cdfc49994aaf18e3c0faefd8b6ea4fd7fde,0x0a07a9c22942a02100a3fc584c84b7419de178a6e3da841c650fdc83dc748a78,0xec1825cee8c69e89dc3d40c4cd40bcb8d3544a95cbe133231e1979f0aa29089d,0xbfe58176d50e6a461e5b468360cca6800b517a84057b72d2138ddcea97bd89c3',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.931364','2026-05-02 22:22:22.564153','2026-05-02 22:22:24.938124',NULL),(120,'AN500-1550588',8,28,'AN500-1550588',NULL,'2026-05-02 22:22:22.494625','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0x10d15e60e512a62585c723b5f92053e3f3a1dbfa6633998b63deb57089994316,0x14e4ccb5188f377d7475a38483ab0b9d0c74301cf45752e89f34897ea07170d0,0xbb840029da78c0735478298af8078650e7918899865d386a84ab2381b3186116,0xec1825cee8c69e89dc3d40c4cd40bcb8d3544a95cbe133231e1979f0aa29089d,0xbfe58176d50e6a461e5b468360cca6800b517a84057b72d2138ddcea97bd89c3',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.931423','2026-05-02 22:22:22.567185','2026-05-02 22:22:24.938205',NULL),(121,'AN500-4362277',8,28,'AN500-4362277',NULL,'2026-05-02 22:22:22.497143','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0x028096e8993550811683e2aa65e54cb0a6c9ac791a30611336fc348aacef2e8a,0x14e4ccb5188f377d7475a38483ab0b9d0c74301cf45752e89f34897ea07170d0,0xbb840029da78c0735478298af8078650e7918899865d386a84ab2381b3186116,0xec1825cee8c69e89dc3d40c4cd40bcb8d3544a95cbe133231e1979f0aa29089d,0xbfe58176d50e6a461e5b468360cca6800b517a84057b72d2138ddcea97bd89c3',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.931485','2026-05-02 22:22:22.569679','2026-05-02 22:22:24.938283',NULL),(122,'AN500-1856136',8,28,'AN500-1856136',NULL,'2026-05-02 22:22:22.499621','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0x9d25ee2917cc06a7e5ccbc6d521e6e82e791cac4fe3580dd0a35903affaa5d3f,0x92be82b4f49d76ce474dd5cc79ba1b3a755c9c0d47ad845a07a8ca2852178ed0,0xdbd4d460d2cac854fd737d10471351024c3f472a29cbe7617ec4d58726d10bb9,0x3c3d53568214662a1f39257172692d32bc6c61c805e0df134d1b6f8c86fa5e13,0xbfe58176d50e6a461e5b468360cca6800b517a84057b72d2138ddcea97bd89c3',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.931541','2026-05-02 22:22:22.572067','2026-05-02 22:22:24.938359',NULL),(123,'AN500-8525938',8,28,'AN500-8525938',NULL,'2026-05-02 22:22:22.502624','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0x6aad9bc971ed74ba109a70647a881c901e7b7153e315405cbb0ed521a744170a,0x6d64516ca4ad13231b88e92fa1d0d22b1260f3f5cecd9ebc79ad90f940262bf2,0xd09f037295d46d7bf524dc9f437d6096d63a599192f0344668dc6b1c36d9f75b,0x3c3d53568214662a1f39257172692d32bc6c61c805e0df134d1b6f8c86fa5e13,0xbfe58176d50e6a461e5b468360cca6800b517a84057b72d2138ddcea97bd89c3',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.931593','2026-05-02 22:22:22.574320','2026-05-02 22:22:24.938445',NULL),(124,'AN500-7481280',8,28,'AN500-7481280',NULL,'2026-05-02 22:22:22.505391','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0xcedb22cbfe2cb372abf4fe007069a5035e7a6271cb6526add9fef335be515714,0x907b065fb9837a9c822c1bb81863d78ae53a15da365d68cdee70a6c43972ddbd,0x187ebcbc5ded8505074229851ee9d596738f36a801782bbf1c1fb617b417165c,0x7bf97ffe47ca4ef1adcb729d93fc61ec21eefb2f949f993c15c312b8e1794416',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.931632','2026-05-02 22:22:22.576702','2026-05-02 22:22:24.938525',NULL),(125,'AN500-2319857',8,28,'AN500-2319857',NULL,'2026-05-02 22:22:22.507419','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0xd2ce5068618acb5de914581b0d876b2e5328247f11ef62961662b7acfb795b14,0x907b065fb9837a9c822c1bb81863d78ae53a15da365d68cdee70a6c43972ddbd,0x187ebcbc5ded8505074229851ee9d596738f36a801782bbf1c1fb617b417165c,0x7bf97ffe47ca4ef1adcb729d93fc61ec21eefb2f949f993c15c312b8e1794416',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.931728','2026-05-02 22:22:22.579291','2026-05-02 22:22:24.938602',NULL),(126,'AN500-6202675',8,28,'AN500-6202675',NULL,'2026-05-02 22:22:22.509346','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0x3d60f311f167fb117b4155bf322f811ca7efca397a6c01c7cae14d58942d1120,0x1a528c00238bb8c50307137ebe395cdfc49994aaf18e3c0faefd8b6ea4fd7fde,0x0a07a9c22942a02100a3fc584c84b7419de178a6e3da841c650fdc83dc748a78,0xec1825cee8c69e89dc3d40c4cd40bcb8d3544a95cbe133231e1979f0aa29089d,0xbfe58176d50e6a461e5b468360cca6800b517a84057b72d2138ddcea97bd89c3',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.931763','2026-05-02 22:22:22.581262','2026-05-02 22:22:24.939157',NULL),(127,'AN500-8210373',8,28,'AN500-8210373',NULL,'2026-05-02 22:22:22.511157','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0xb567b0c14c37ea42af17d8cb53ec60a2a19a53b89b6c83f0461e1cee167f0dff,0x92be82b4f49d76ce474dd5cc79ba1b3a755c9c0d47ad845a07a8ca2852178ed0,0xdbd4d460d2cac854fd737d10471351024c3f472a29cbe7617ec4d58726d10bb9,0x3c3d53568214662a1f39257172692d32bc6c61c805e0df134d1b6f8c86fa5e13,0xbfe58176d50e6a461e5b468360cca6800b517a84057b72d2138ddcea97bd89c3',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.931808','2026-05-02 22:22:22.583788','2026-05-02 22:22:24.939243',NULL),(128,'AN500-6416391',8,28,'AN500-6416391',NULL,'2026-05-02 22:22:22.513172','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0x2b166bfebf052293c766e0cd618890f4cface948c336cb947a3257d4a9d00e78,0xb75936f738b29e27a91df62f582c71a7e3fc7fbeec2d2a1117a67da6c1d8d157,0x0a07a9c22942a02100a3fc584c84b7419de178a6e3da841c650fdc83dc748a78,0xec1825cee8c69e89dc3d40c4cd40bcb8d3544a95cbe133231e1979f0aa29089d,0xbfe58176d50e6a461e5b468360cca6800b517a84057b72d2138ddcea97bd89c3',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.931855','2026-05-02 22:22:22.585855','2026-05-02 22:22:24.939313',NULL),(129,'AN500-0852593',8,28,'AN500-0852593',NULL,'2026-05-02 22:22:22.515257','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0x97ecdafa9fdd8f4c6032838906ee24ca5facf9c81b46c83203f7c13c78d0335d,0xa91bde0d06eab63b69d6e370fbda2b635d46db21bee9bd1d2e8bc13f1379c33a,0xdbd4d460d2cac854fd737d10471351024c3f472a29cbe7617ec4d58726d10bb9,0x3c3d53568214662a1f39257172692d32bc6c61c805e0df134d1b6f8c86fa5e13,0xbfe58176d50e6a461e5b468360cca6800b517a84057b72d2138ddcea97bd89c3',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.931888','2026-05-02 22:22:22.589388','2026-05-02 22:22:24.939382',NULL),(130,'AN500-6823554',8,28,'AN500-6823554',NULL,'2026-05-02 22:22:22.520172','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:22:22.398387','2028-03-12 23:59:59.000000',NULL,'0xd423e74a95799e1484b7146e37c63bcb82398a73b0bc6ce4da48668f54a95044,0xeddb6078c92f77136572d61c6cfe272015b0a0eae469799c6333277a4b4f7a85,0xe4b3e30f0334a550fc50d9c3f76c37ea6f33263ff2d4e11ab096b2993fa6eace,0x7bf97ffe47ca4ef1adcb729d93fc61ec21eefb2f949f993c15c312b8e1794416',_binary '','\n[Blockchain] Registered in TX: 0x41d5f8478a1809130c5118c19fd3e35e968a3a5952d0b9ab29cc0b269053414e at block 2026-05-02T22:22:24.931924','2026-05-02 22:22:22.592239','2026-05-02 22:22:24.939470',NULL),(131,'AN500-3069693',29,28,'AN500-3069693',NULL,'2026-05-02 22:36:42.923669','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:36:42.876672','2027-05-02 23:59:59.000000',NULL,'0xc371e6fb869f73791bc829b7b44f08dc380ec91bb37ff83dbe06dba5d76b06e5,0xa08348b14f418da2058715285ebac34ceac61c4408e291c5f55e4fda09bb9db1,0xf133d8de4d9f077d1871db7453a3de94925d518538a812cfd0c6be177247d119',_binary '','\n[Blockchain] Registered in TX: 0xb6e4837e3d053aafe10a9778cdc1695221cb3302a2e26bf2ae5a68274d0ee1e8 at block 2026-05-02T22:36:48.893040','2026-05-02 22:36:42.934489','2026-05-02 22:36:48.895464',NULL),(132,'AN500-4731645',29,28,'AN500-4731645',NULL,'2026-05-02 22:36:42.926369','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:36:42.876672','2027-05-02 23:59:59.000000',NULL,'0xe0d2a6101d46e2968dbe2dfc648559b0d58fa8ac7aaf16bf4de2df54abf3acc3',_binary '','\n[Blockchain] Registered in TX: 0xb6e4837e3d053aafe10a9778cdc1695221cb3302a2e26bf2ae5a68274d0ee1e8 at block 2026-05-02T22:36:48.893198','2026-05-02 22:36:42.950471','2026-05-02 22:36:48.895589',NULL),(133,'AN500-6635791',29,28,'AN500-6635791',NULL,'2026-05-02 22:36:42.928345','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:36:42.876672','2027-05-02 23:59:59.000000',NULL,'0x3652254779c42869f0f337b1778c566fa73566696265e7abb783b39f707f77d6,0xaae56a09adf991f1b66af1117ce7ae175dac785ed2c5de9188f738cb322aa76d,0xf133d8de4d9f077d1871db7453a3de94925d518538a812cfd0c6be177247d119',_binary '','\n[Blockchain] Registered in TX: 0xb6e4837e3d053aafe10a9778cdc1695221cb3302a2e26bf2ae5a68274d0ee1e8 at block 2026-05-02T22:36:48.893270','2026-05-02 22:36:42.953718','2026-05-02 22:36:48.895765',NULL),(134,'AN500-6701192',29,28,'AN500-6701192',NULL,'2026-05-02 22:36:42.930257','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:36:42.876672','2027-05-02 23:59:59.000000',NULL,'0x2802265df79aa44ec92b1e4429dc969a12f6c56d46c21af01f22f26443d1b27f,0xaae56a09adf991f1b66af1117ce7ae175dac785ed2c5de9188f738cb322aa76d,0xf133d8de4d9f077d1871db7453a3de94925d518538a812cfd0c6be177247d119',_binary '','\n[Blockchain] Registered in TX: 0xb6e4837e3d053aafe10a9778cdc1695221cb3302a2e26bf2ae5a68274d0ee1e8 at block 2026-05-02T22:36:48.893336','2026-05-02 22:36:42.955546','2026-05-02 22:36:48.895847',NULL),(135,'AN500-0317338',29,28,'AN500-0317338',NULL,'2026-05-02 22:36:42.932050','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:36:42.876672','2027-05-02 23:59:59.000000',NULL,'0x8e0bf991693ad668ff38c26ca3c8cf1176a9dc72482e33cd70f2187631090436,0xa08348b14f418da2058715285ebac34ceac61c4408e291c5f55e4fda09bb9db1,0xf133d8de4d9f077d1871db7453a3de94925d518538a812cfd0c6be177247d119',_binary '','\n[Blockchain] Registered in TX: 0xb6e4837e3d053aafe10a9778cdc1695221cb3302a2e26bf2ae5a68274d0ee1e8 at block 2026-05-02T22:36:48.893414','2026-05-02 22:36:42.958490','2026-05-02 22:36:48.895917',NULL),(136,'AN500-3906288',30,28,'AN500-3906288',NULL,'2026-05-02 22:37:03.139290','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:37:03.126826','2027-05-02 23:59:59.000000',NULL,'0x827e9bfafded5f8caceb0beb5fd87e1a711b056b7a04c3b6d6dac7c3ff0290a9,0x00bb3ebe3467f20fde98c7d9667b92a5b605a566bf5269db183fca07174e159e,0xad865561d56413d7f553b0296dae33894dac46dffbfe7e5cf0768ba9c3b66129',_binary '','\n[Blockchain] Registered in TX: 0xb4086de847760b9d3af7192ead9ce718c4b585873c9b6ff4a8764d40e0b76ef5 at block 2026-05-02T22:37:12.822512','2026-05-02 22:37:03.151554','2026-05-02 22:37:12.827732',NULL),(137,'AN500-3057894',30,28,'AN500-3057894',NULL,'2026-05-02 22:37:03.142090','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:37:03.126826','2027-05-02 23:59:59.000000',NULL,'0x4cc88e411bbbdd8271ff379723bc33a24ec6d0d0fa169a35b1ac4d168120193b,0x00bb3ebe3467f20fde98c7d9667b92a5b605a566bf5269db183fca07174e159e,0xad865561d56413d7f553b0296dae33894dac46dffbfe7e5cf0768ba9c3b66129',_binary '','\n[Blockchain] Registered in TX: 0xb4086de847760b9d3af7192ead9ce718c4b585873c9b6ff4a8764d40e0b76ef5 at block 2026-05-02T22:37:12.822677','2026-05-02 22:37:03.155396','2026-05-02 22:37:12.828228',NULL),(138,'AN500-9088683',30,28,'AN500-9088683',NULL,'2026-05-02 22:37:03.145508','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:37:03.126826','2027-05-02 23:59:59.000000',NULL,'0x0d3da2a405eca950a39fa0b861cf56ff3594ef4489d966ba2894ab77bfccb6ff,0x4e98411c209773cb18a29f85a2507ae05bc90d241376ec8714e357b5b8d0acc2,0xad865561d56413d7f553b0296dae33894dac46dffbfe7e5cf0768ba9c3b66129',_binary '','\n[Blockchain] Registered in TX: 0xb4086de847760b9d3af7192ead9ce718c4b585873c9b6ff4a8764d40e0b76ef5 at block 2026-05-02T22:37:12.822753','2026-05-02 22:37:03.163286','2026-05-02 22:37:12.828500',NULL),(139,'AN500-5716911',30,28,'AN500-5716911',NULL,'2026-05-02 22:37:03.148426','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:37:03.126826','2027-05-02 23:59:59.000000',NULL,'0x07ed9c44605f813c4bc43aa1e1f9fd95dee106f5551bdad18799ad06dbde795e,0x4e98411c209773cb18a29f85a2507ae05bc90d241376ec8714e357b5b8d0acc2,0xad865561d56413d7f553b0296dae33894dac46dffbfe7e5cf0768ba9c3b66129',_binary '','\n[Blockchain] Registered in TX: 0xb4086de847760b9d3af7192ead9ce718c4b585873c9b6ff4a8764d40e0b76ef5 at block 2026-05-02T22:37:12.822830','2026-05-02 22:37:03.166671','2026-05-02 22:37:12.828665',NULL),(140,'AN500-5973641',30,28,'AN500-5973641',NULL,'2026-05-02 22:37:03.151249','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:37:03.126826','2027-05-02 23:59:59.000000',NULL,'0xc573772063acde0f1c0d1d44f7a4aa43e247a4dc590465e3de8fbcd478649e3f',_binary '','\n[Blockchain] Registered in TX: 0xb4086de847760b9d3af7192ead9ce718c4b585873c9b6ff4a8764d40e0b76ef5 at block 2026-05-02T22:37:12.822900','2026-05-02 22:37:03.170250','2026-05-02 22:37:12.828969',NULL),(141,'AN500-5453686',31,28,'AN500-5453686',NULL,'2026-05-02 22:37:39.916284','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:37:39.905130','2027-05-02 23:59:59.000000',NULL,'0x9c44a15221924534d9391736eb73a755dc4ece5871294ae428e827510e197459',_binary '','\n[Blockchain] Registered in TX: 0x653a1b0d1007b9930fbab471f6ea1b9d22045a0cdba2447245cb643047d0b2fe at block 2026-05-02T22:38:00.882212','2026-05-02 22:37:39.932436','2026-05-02 22:38:00.883928',NULL),(142,'AN500-5364155',31,28,'AN500-5364155',NULL,'2026-05-02 22:37:39.920944','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:37:39.905130','2027-05-02 23:59:59.000000',NULL,'0x634551ab6958cc409de0c24721484d9bca8bcd7fc06f8a244cb2f16c1e6c8f10,0x57e0d50b90da2317671c783fd754bbe2a0aaa3a1c9da94ac289be583b1f82d90,0xf7ecfbd9eb51e97df3574b98a1eb734ee999948ff239dcd3e66b7324043993e5',_binary '','\n[Blockchain] Registered in TX: 0x653a1b0d1007b9930fbab471f6ea1b9d22045a0cdba2447245cb643047d0b2fe at block 2026-05-02T22:38:00.882282','2026-05-02 22:37:39.936423','2026-05-02 22:38:00.884087',NULL),(143,'AN500-8287169',31,28,'AN500-8287169',NULL,'2026-05-02 22:37:39.925738','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:37:39.905130','2027-05-02 23:59:59.000000',NULL,'0x4e2a97df6df7a7f2b14440a1b025ed47646ce8eff03d62a9d2ff126ac6daa332,0x3f261136c0c301ae1ce807dad2e8e7c054e83478738408516b713db02560a6da,0xf7ecfbd9eb51e97df3574b98a1eb734ee999948ff239dcd3e66b7324043993e5',_binary '','\n[Blockchain] Registered in TX: 0x653a1b0d1007b9930fbab471f6ea1b9d22045a0cdba2447245cb643047d0b2fe at block 2026-05-02T22:38:00.882341','2026-05-02 22:37:39.940880','2026-05-02 22:38:00.884187',NULL),(144,'AN500-8582660',31,28,'AN500-8582660',NULL,'2026-05-02 22:37:39.928714','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:37:39.905130','2027-05-02 23:59:59.000000',NULL,'0x450ca35e7fabfa904866edda80b7adcfea535bd1716eb32dcffdc114f9277d27,0x3f261136c0c301ae1ce807dad2e8e7c054e83478738408516b713db02560a6da,0xf7ecfbd9eb51e97df3574b98a1eb734ee999948ff239dcd3e66b7324043993e5',_binary '','\n[Blockchain] Registered in TX: 0x653a1b0d1007b9930fbab471f6ea1b9d22045a0cdba2447245cb643047d0b2fe at block 2026-05-02T22:38:00.882392','2026-05-02 22:37:39.944593','2026-05-02 22:38:00.884270',NULL),(145,'AN500-4664799',31,28,'AN500-4664799',NULL,'2026-05-02 22:37:39.932122','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:37:39.905130','2027-05-02 23:59:59.000000',NULL,'0xd6f86f21dfb2b942c2b333ba05b729452775adcb3036b93630119c5ca7650dc9,0x57e0d50b90da2317671c783fd754bbe2a0aaa3a1c9da94ac289be583b1f82d90,0xf7ecfbd9eb51e97df3574b98a1eb734ee999948ff239dcd3e66b7324043993e5',_binary '','\n[Blockchain] Registered in TX: 0x653a1b0d1007b9930fbab471f6ea1b9d22045a0cdba2447245cb643047d0b2fe at block 2026-05-02T22:38:00.882452','2026-05-02 22:37:39.947405','2026-05-02 22:38:00.884357',NULL),(146,'AN500-0029020',32,28,'AN500-0029020',NULL,'2026-05-02 22:38:16.578735','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:38:16.558918','2027-05-02 23:59:59.000000',NULL,'0x594c27efc826e3d127805b031b8c692d24542cc55bfd84f520f27884a83b9316',_binary '','\n[Blockchain] Registered in TX: 0xe6e55f752f87c196b247fa351f5006d2b2deb9803e68903ffbe8aa4c91d68f1d at block 2026-05-02T22:38:24.854573','2026-05-02 22:38:16.593635','2026-05-02 22:38:24.856832',NULL),(147,'AN500-6796110',32,28,'AN500-6796110',NULL,'2026-05-02 22:38:16.583059','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:38:16.558918','2027-05-02 23:59:59.000000',NULL,'0x6dc7f310d954d0c3383e5b76dc0a90b2cd95b90a20c29da2cc4f8ca7ae018639,0x19f3e06cd3d35a4ce82e0c02690c6b31e0b613112206ec7277882d1aff8f8e7e,0xdf24afe691ac6a8a45721d93daadd228f92f05f623805883f6e6d6ab45c81c61',_binary '','\n[Blockchain] Registered in TX: 0xe6e55f752f87c196b247fa351f5006d2b2deb9803e68903ffbe8aa4c91d68f1d at block 2026-05-02T22:38:24.854643','2026-05-02 22:38:16.596500','2026-05-02 22:38:24.858012',NULL),(148,'AN500-8005941',32,28,'AN500-8005941',NULL,'2026-05-02 22:38:16.586274','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:38:16.558918','2027-05-02 23:59:59.000000',NULL,'0x771c74529c7a73a5e848e4949a6d3ab7e2458a8a3691a3eeca76bc8d5d1fc905,0x067f34a7c2026caa4f7a38cde6343a4e6b996003ce6f6610639fdaa106ab3c90,0xdf24afe691ac6a8a45721d93daadd228f92f05f623805883f6e6d6ab45c81c61',_binary '','\n[Blockchain] Registered in TX: 0xe6e55f752f87c196b247fa351f5006d2b2deb9803e68903ffbe8aa4c91d68f1d at block 2026-05-02T22:38:24.854690','2026-05-02 22:38:16.598963','2026-05-02 22:38:24.858221',NULL),(149,'AN500-5327035',32,28,'AN500-5327035',NULL,'2026-05-02 22:38:16.591118','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:38:16.558918','2027-05-02 23:59:59.000000',NULL,'0x8aed8d622a1d21bdbe59e70e4cca66b41cb2f8087f0cf2eacfd299bc39a38db6,0x067f34a7c2026caa4f7a38cde6343a4e6b996003ce6f6610639fdaa106ab3c90,0xdf24afe691ac6a8a45721d93daadd228f92f05f623805883f6e6d6ab45c81c61',_binary '','\n[Blockchain] Registered in TX: 0xe6e55f752f87c196b247fa351f5006d2b2deb9803e68903ffbe8aa4c91d68f1d at block 2026-05-02T22:38:24.854730','2026-05-02 22:38:16.602031','2026-05-02 22:38:24.858402',NULL),(150,'AN500-1102733',32,28,'AN500-1102733',NULL,'2026-05-02 22:38:16.593387','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:38:16.558918','2027-05-02 23:59:59.000000',NULL,'0x726610e383563d7c5d972cfaea2cc6524853a3fed2dfde343ede6c640474b4ad,0x19f3e06cd3d35a4ce82e0c02690c6b31e0b613112206ec7277882d1aff8f8e7e,0xdf24afe691ac6a8a45721d93daadd228f92f05f623805883f6e6d6ab45c81c61',_binary '','\n[Blockchain] Registered in TX: 0xe6e55f752f87c196b247fa351f5006d2b2deb9803e68903ffbe8aa4c91d68f1d at block 2026-05-02T22:38:24.854777','2026-05-02 22:38:16.605509','2026-05-02 22:38:24.858488',NULL),(151,'AN500-4534199',33,28,'AN500-4534199',NULL,'2026-05-02 22:38:39.249581','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:38:39.236416','2027-05-02 23:59:59.000000',NULL,'0x3d0076074556540804c845947b8a0cca00ea08053b6bd84ca53d915e49988e8f,0x6689bee158f0b167c6e41510110be45d9b3c5b97adec24ae0f00a2011f5f6fee,0xe32a087aa5f53c953b9ee61abd3af605954443bcf1c4ad51bc872c63217ee076',_binary '','\n[Blockchain] Registered in TX: 0x03c0ab11fc25208ab8608d72dade8fac2a183f89d0f844f42e6c1c0c8f3367ab at block 2026-05-02T22:39:01.398300','2026-05-02 22:38:39.261118','2026-05-02 22:39:01.400145',NULL),(152,'AN500-8337102',33,28,'AN500-8337102',NULL,'2026-05-02 22:38:39.252063','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:38:39.236416','2027-05-02 23:59:59.000000',NULL,'0xc3a008b27cc5b1833f92ce062887aa8afeb0650bf5c0a46e7b58da5d50ffc765',_binary '','\n[Blockchain] Registered in TX: 0x03c0ab11fc25208ab8608d72dade8fac2a183f89d0f844f42e6c1c0c8f3367ab at block 2026-05-02T22:39:01.398449','2026-05-02 22:38:39.264838','2026-05-02 22:39:01.400242',NULL),(153,'AN500-7507244',33,28,'AN500-7507244',NULL,'2026-05-02 22:38:39.254042','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:38:39.236416','2027-05-02 23:59:59.000000',NULL,'0x690054fd4b3bc1159d10aaf43a67d475aa5c92b877defa9053bbaa328bb1abdf,0xf2c0e4f6ce1ab68ade0c0783d4a7427a67b4f6ac548c0f7b1d34ffaabf639705,0xe32a087aa5f53c953b9ee61abd3af605954443bcf1c4ad51bc872c63217ee076',_binary '','\n[Blockchain] Registered in TX: 0x03c0ab11fc25208ab8608d72dade8fac2a183f89d0f844f42e6c1c0c8f3367ab at block 2026-05-02T22:39:01.398517','2026-05-02 22:38:39.268353','2026-05-02 22:39:01.400329',NULL),(154,'AN500-7465999',33,28,'AN500-7465999',NULL,'2026-05-02 22:38:39.257400','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:38:39.236416','2027-05-02 23:59:59.000000',NULL,'0xcc846ad282084e0a481d4ba36119f6dedf2ac78c83a5a6556d8548c49a31cf5f,0xf2c0e4f6ce1ab68ade0c0783d4a7427a67b4f6ac548c0f7b1d34ffaabf639705,0xe32a087aa5f53c953b9ee61abd3af605954443bcf1c4ad51bc872c63217ee076',_binary '','\n[Blockchain] Registered in TX: 0x03c0ab11fc25208ab8608d72dade8fac2a183f89d0f844f42e6c1c0c8f3367ab at block 2026-05-02T22:39:01.398587','2026-05-02 22:38:39.271536','2026-05-02 22:39:01.400401',NULL),(155,'AN500-1500650',33,28,'AN500-1500650',NULL,'2026-05-02 22:38:39.260735','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:38:39.236416','2027-05-02 23:59:59.000000',NULL,'0x21bff441b25ac152b5c5149a1bc5a92c656215e140bde6cbbf350bacee9f8f5e,0x6689bee158f0b167c6e41510110be45d9b3c5b97adec24ae0f00a2011f5f6fee,0xe32a087aa5f53c953b9ee61abd3af605954443bcf1c4ad51bc872c63217ee076',_binary '','\n[Blockchain] Registered in TX: 0x03c0ab11fc25208ab8608d72dade8fac2a183f89d0f844f42e6c1c0c8f3367ab at block 2026-05-02T22:39:01.398639','2026-05-02 22:38:39.275091','2026-05-02 22:39:01.400501',NULL),(156,'AN500-4893758',34,28,'AN500-4893758',NULL,'2026-05-02 22:39:15.624103','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:39:15.610764','2027-05-02 23:59:59.000000',NULL,'0x8b451f98ad276ca25903eb9e979593833b3044e7fd7dfd263cbb652ff84b852f,0xf3fb9196cfca0eefedc03328c50ed8680d109360184502f964bd675fa95a4e22,0xd89b79ca6d5f030dfd8d82c031b6c54e13f0305921e9568c398840f79cbad8da',_binary '','\n[Blockchain] Registered in TX: 0x4c3e4ab9513089993a3f9025dc8aa1ae3f2dc22ad224145251c085ed4d4787b4 at block 2026-05-02T22:39:25.245050','2026-05-02 22:39:15.642309','2026-05-02 22:39:25.247021',NULL),(157,'AN500-3823821',34,28,'AN500-3823821',NULL,'2026-05-02 22:39:15.626729','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:39:15.610764','2027-05-02 23:59:59.000000',NULL,'0x50be4b80c883ba0cee1f7ad6fbc4164d44c5241cc0b7060a0d52997bdb09ed66',_binary '','\n[Blockchain] Registered in TX: 0x4c3e4ab9513089993a3f9025dc8aa1ae3f2dc22ad224145251c085ed4d4787b4 at block 2026-05-02T22:39:25.245149','2026-05-02 22:39:15.647522','2026-05-02 22:39:25.247176',NULL),(158,'AN500-6570207',34,28,'AN500-6570207',NULL,'2026-05-02 22:39:15.630139','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:39:15.610764','2027-05-02 23:59:59.000000',NULL,'0x9dbfe08ae01017e0c6e1cf0b6b54fab33682f7a4731d491ea12cce3cc86e2599,0x06f86302f86105b21cd72ea3cbaa335f277c572247b17cee4f7e2298cd106e92,0xd89b79ca6d5f030dfd8d82c031b6c54e13f0305921e9568c398840f79cbad8da',_binary '','\n[Blockchain] Registered in TX: 0x4c3e4ab9513089993a3f9025dc8aa1ae3f2dc22ad224145251c085ed4d4787b4 at block 2026-05-02T22:39:25.245235','2026-05-02 22:39:15.650314','2026-05-02 22:39:25.247298',NULL),(159,'AN500-2160172',34,28,'AN500-2160172',NULL,'2026-05-02 22:39:15.638971','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:39:15.610764','2027-05-02 23:59:59.000000',NULL,'0x951e212ba759c1a67f6e92ea5d35f3fb37ad0ca6e6ad550edabb2b30ba263c56,0xf3fb9196cfca0eefedc03328c50ed8680d109360184502f964bd675fa95a4e22,0xd89b79ca6d5f030dfd8d82c031b6c54e13f0305921e9568c398840f79cbad8da',_binary '','\n[Blockchain] Registered in TX: 0x4c3e4ab9513089993a3f9025dc8aa1ae3f2dc22ad224145251c085ed4d4787b4 at block 2026-05-02T22:39:25.245350','2026-05-02 22:39:15.653317','2026-05-02 22:39:25.247456',NULL),(160,'AN500-7342893',34,28,'AN500-7342893',NULL,'2026-05-02 22:39:15.641663','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:39:15.610764','2027-05-02 23:59:59.000000',NULL,'0xc5d93a77331ee42e1db74df64f713ff673e2a0fadbd171606f847935606435dc,0x06f86302f86105b21cd72ea3cbaa335f277c572247b17cee4f7e2298cd106e92,0xd89b79ca6d5f030dfd8d82c031b6c54e13f0305921e9568c398840f79cbad8da',_binary '','\n[Blockchain] Registered in TX: 0x4c3e4ab9513089993a3f9025dc8aa1ae3f2dc22ad224145251c085ed4d4787b4 at block 2026-05-02T22:39:25.245416','2026-05-02 22:39:15.655226','2026-05-02 22:39:25.247533',NULL),(161,'AN500-9094448',35,28,'AN500-9094448',NULL,'2026-05-02 22:39:39.438196','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:39:39.422536','2027-05-02 23:59:59.000000',NULL,'0xb402aa6ce5b6189c5380fbef898300b9a3560abf64224b9342810f2871cac2e9,0xb53dfd154da48a7745b5143850c054ebf48b5a08fb135ad396e685fc138a617d,0xfc276408e990f975e3e102d766dcf296de69d4b295c8c4b739a31d0a8e58ff86',_binary '','\n[Blockchain] Registered in TX: 0xc97bef8eeb7cce39858d706d53f529a1ba14739f70f076b5109f5453fcf86b69 at block 2026-05-02T22:39:49.044831','2026-05-02 22:39:39.451852','2026-05-02 22:39:49.046371',NULL),(162,'AN500-5745786',35,28,'AN500-5745786',NULL,'2026-05-02 22:39:39.440993','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:39:39.422536','2027-05-02 23:59:59.000000',NULL,'0xba606697b7cba21d88ab1009fdc962c57ba3fb4d424c6528cd75b204af780220,0xb53dfd154da48a7745b5143850c054ebf48b5a08fb135ad396e685fc138a617d,0xfc276408e990f975e3e102d766dcf296de69d4b295c8c4b739a31d0a8e58ff86',_binary '','\n[Blockchain] Registered in TX: 0xc97bef8eeb7cce39858d706d53f529a1ba14739f70f076b5109f5453fcf86b69 at block 2026-05-02T22:39:49.045001','2026-05-02 22:39:39.457524','2026-05-02 22:39:49.046456',NULL),(163,'AN500-6092402',35,28,'AN500-6092402',NULL,'2026-05-02 22:39:39.444655','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:39:39.422536','2027-05-02 23:59:59.000000',NULL,'0x74c670c021fc826312dc68ca3d92df98b4d3a900a915e2f53c281b172014278f,0xffcc314441a2de096eff798fbe5a6b5c142c81a31cacac4fad048defae590c9d,0xfc276408e990f975e3e102d766dcf296de69d4b295c8c4b739a31d0a8e58ff86',_binary '','\n[Blockchain] Registered in TX: 0xc97bef8eeb7cce39858d706d53f529a1ba14739f70f076b5109f5453fcf86b69 at block 2026-05-02T22:39:49.045062','2026-05-02 22:39:39.460101','2026-05-02 22:39:49.046549',NULL),(164,'AN500-9296158',35,28,'AN500-9296158',NULL,'2026-05-02 22:39:39.448044','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:39:39.422536','2027-05-02 23:59:59.000000',NULL,'0x3307e79171b08b2eff37c4930a388e67748c6abde7e99fe5185845cf5fb519d6,0xffcc314441a2de096eff798fbe5a6b5c142c81a31cacac4fad048defae590c9d,0xfc276408e990f975e3e102d766dcf296de69d4b295c8c4b739a31d0a8e58ff86',_binary '','\n[Blockchain] Registered in TX: 0xc97bef8eeb7cce39858d706d53f529a1ba14739f70f076b5109f5453fcf86b69 at block 2026-05-02T22:39:49.045100','2026-05-02 22:39:39.463329','2026-05-02 22:39:49.046607',NULL),(165,'AN500-5818239',35,28,'AN500-5818239',NULL,'2026-05-02 22:39:39.451401','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:39:39.422536','2027-05-02 23:59:59.000000',NULL,'0xeec2eb3dd5bbb2ff144b9547fc57db0c82ee317aeccd5ad94e21a325d2540e79',_binary '','\n[Blockchain] Registered in TX: 0xc97bef8eeb7cce39858d706d53f529a1ba14739f70f076b5109f5453fcf86b69 at block 2026-05-02T22:39:49.045138','2026-05-02 22:39:39.465931','2026-05-02 22:39:49.046724',NULL),(166,'AN500-6296380',36,28,'AN500-6296380',NULL,'2026-05-02 22:40:03.422752','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:40:03.410397','2027-05-02 23:59:59.000000',NULL,'0x8c76b8b5f81ac4ce30bccc4538d46bb9cda3eac4d2ecbce23feb881ee28a8215,0x6872bd620b4b270f660c46b6adc430f88299b21b9375a8923172bd135bf5334a,0xd644a1a43b4b2d4ff1cd61df2b06892ad1f75732d5b012a901aa15c10a945fa9',_binary '','\n[Blockchain] Registered in TX: 0x08501b58be8bd5012b245a98c29bc6f60c1cce023339675cff766622b4a0c664 at block 2026-05-02T22:40:13.070632','2026-05-02 22:40:03.432750','2026-05-02 22:40:13.071750',NULL),(167,'AN500-9331854',36,28,'AN500-9331854',NULL,'2026-05-02 22:40:03.427005','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:40:03.410397','2027-05-02 23:59:59.000000',NULL,'0x7b4393fc11518ac959c5e69f1002a73911f62d160ceac60d599d69abf271551c,0xaf01a10b64b7d34ebfef561db7c268a30a9618d18f4945701458e96f1257ee1f,0xd644a1a43b4b2d4ff1cd61df2b06892ad1f75732d5b012a901aa15c10a945fa9',_binary '','\n[Blockchain] Registered in TX: 0x08501b58be8bd5012b245a98c29bc6f60c1cce023339675cff766622b4a0c664 at block 2026-05-02T22:40:13.070673','2026-05-02 22:40:03.435448','2026-05-02 22:40:13.071849',NULL),(168,'AN500-5237825',36,28,'AN500-5237825',NULL,'2026-05-02 22:40:03.428915','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:40:03.410397','2027-05-02 23:59:59.000000',NULL,'0x65fda7fc1488d3a66fa4023b78e7ed80ec475e9e8c4a5fc799478e347523c079',_binary '','\n[Blockchain] Registered in TX: 0x08501b58be8bd5012b245a98c29bc6f60c1cce023339675cff766622b4a0c664 at block 2026-05-02T22:40:13.070704','2026-05-02 22:40:03.438255','2026-05-02 22:40:13.071911',NULL),(169,'AN500-8310711',36,28,'AN500-8310711',NULL,'2026-05-02 22:40:03.430738','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:40:03.410397','2027-05-02 23:59:59.000000',NULL,'0x400c57f8bc725a4052f1d98c878d9feb24ca9ef403b856471e11f3db0e729408,0xaf01a10b64b7d34ebfef561db7c268a30a9618d18f4945701458e96f1257ee1f,0xd644a1a43b4b2d4ff1cd61df2b06892ad1f75732d5b012a901aa15c10a945fa9',_binary '','\n[Blockchain] Registered in TX: 0x08501b58be8bd5012b245a98c29bc6f60c1cce023339675cff766622b4a0c664 at block 2026-05-02T22:40:13.070737','2026-05-02 22:40:03.441349','2026-05-02 22:40:13.071951',NULL),(170,'AN500-8757753',36,28,'AN500-8757753',NULL,'2026-05-02 22:40:03.432481','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:40:03.410397','2027-05-02 23:59:59.000000',NULL,'0xc87094a63bbabb5563ccd06873503015da38b5ec7b34afd98712bf5aaa9e41b0,0x6872bd620b4b270f660c46b6adc430f88299b21b9375a8923172bd135bf5334a,0xd644a1a43b4b2d4ff1cd61df2b06892ad1f75732d5b012a901aa15c10a945fa9',_binary '','\n[Blockchain] Registered in TX: 0x08501b58be8bd5012b245a98c29bc6f60c1cce023339675cff766622b4a0c664 at block 2026-05-02T22:40:13.070765','2026-05-02 22:40:03.444199','2026-05-02 22:40:13.072128',NULL),(171,'AN500-7340415',37,28,'AN500-7340415',NULL,'2026-05-02 22:40:27.456648','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:40:27.442210','2027-05-02 23:59:59.000000',NULL,'0x2b24490dee6f2b93088ba57d011a7522469ebbbbad047f761882d05a5d174cf1,0x08bf9302752dff9e2ef14ec11c0e2884d938f63d4f0d0b37313a83802ddebf8f,0xf2f1e8cfca072cac81b79ae4fe4e6dc04dd71313ae8c23182aa57523f537c333',_binary '','\n[Blockchain] Registered in TX: 0x9bc369963920a1edfd92591e077e0424da7c08b1172e64b587045e54ea374b3f at block 2026-05-02T22:40:38.238660','2026-05-02 22:40:27.469735','2026-05-02 22:40:38.245071',NULL),(172,'AN500-1395043',37,28,'AN500-1395043',NULL,'2026-05-02 22:40:27.459967','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:40:27.442210','2027-05-02 23:59:59.000000',NULL,'0x4f3f14321bb24ee0937c3ffd1990bfd6f2d573d2ed14d1eed72fe6e2c24d0115,0xa40747ada77d3395a97b6a275a3c98773bd32acf06e7a1ec593a67a8c222b918,0xf2f1e8cfca072cac81b79ae4fe4e6dc04dd71313ae8c23182aa57523f537c333',_binary '','\n[Blockchain] Registered in TX: 0x9bc369963920a1edfd92591e077e0424da7c08b1172e64b587045e54ea374b3f at block 2026-05-02T22:40:38.238713','2026-05-02 22:40:27.472839','2026-05-02 22:40:38.245237',NULL),(173,'AN500-7373747',37,28,'AN500-7373747',NULL,'2026-05-02 22:40:27.462975','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:40:27.442210','2027-05-02 23:59:59.000000',NULL,'0x3c50454865a169798e3dd9d5fa56e67207451b608f3c4f66d061db6979ecb3d4,0x08bf9302752dff9e2ef14ec11c0e2884d938f63d4f0d0b37313a83802ddebf8f,0xf2f1e8cfca072cac81b79ae4fe4e6dc04dd71313ae8c23182aa57523f537c333',_binary '','\n[Blockchain] Registered in TX: 0x9bc369963920a1edfd92591e077e0424da7c08b1172e64b587045e54ea374b3f at block 2026-05-02T22:40:38.238756','2026-05-02 22:40:27.477076','2026-05-02 22:40:38.245321',NULL),(174,'AN500-9629673',37,28,'AN500-9629673',NULL,'2026-05-02 22:40:27.465491','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:40:27.442210','2027-05-02 23:59:59.000000',NULL,'0x3c815ea70ef5a7aa229cdccf9644ba91bc616ff2767130c14cd2178c98470996',_binary '','\n[Blockchain] Registered in TX: 0x9bc369963920a1edfd92591e077e0424da7c08b1172e64b587045e54ea374b3f at block 2026-05-02T22:40:38.238801','2026-05-02 22:40:27.481243','2026-05-02 22:40:38.245366',NULL),(175,'AN500-4240423',37,28,'AN500-4240423',NULL,'2026-05-02 22:40:27.469317','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:40:27.442210','2027-05-02 23:59:59.000000',NULL,'0xb994a74d04178ebed327cd22c2c3df208fe560d592aeb9861ad21549f2f7041e,0xa40747ada77d3395a97b6a275a3c98773bd32acf06e7a1ec593a67a8c222b918,0xf2f1e8cfca072cac81b79ae4fe4e6dc04dd71313ae8c23182aa57523f537c333',_binary '','\n[Blockchain] Registered in TX: 0x9bc369963920a1edfd92591e077e0424da7c08b1172e64b587045e54ea374b3f at block 2026-05-02T22:40:38.238832','2026-05-02 22:40:27.485718','2026-05-02 22:40:38.245462',NULL),(176,'AN500-7456884',38,28,'AN500-7456884',NULL,'2026-05-02 22:40:52.434192','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:40:52.420769','2027-05-02 23:59:59.000000',NULL,'0x3758a7ac1b87276349301f86fab593d2eead825c91dec238b511ce6dfc0ccd26,0x25ceef23af160ef4b12e03a8644577a763a08789aa3e772eafca0de938d1b4b6,0xc7622dc6754f43e53baa98739e8e4d0294c548dc40964f0e587793763e61305b',_binary '','\n[Blockchain] Registered in TX: 0x14839f2c1434329918fe11f3be2654e0dfde0d17eb56a81403b44d65d942ce15 at block 2026-05-02T22:41:02.081666','2026-05-02 22:40:52.451067','2026-05-02 22:41:02.085409',NULL),(177,'AN500-4558747',38,28,'AN500-4558747',NULL,'2026-05-02 22:40:52.440630','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:40:52.420769','2027-05-02 23:59:59.000000',NULL,'0x7afd6c88d9047c003d96d9de9240597c9b0bda7bd0d9a22c5b7c85d02c595e92,0x1236c54e00556be70d806d20d098629b8ad4a013b44ea09bb82094c6cd607b62,0xc7622dc6754f43e53baa98739e8e4d0294c548dc40964f0e587793763e61305b',_binary '','\n[Blockchain] Registered in TX: 0x14839f2c1434329918fe11f3be2654e0dfde0d17eb56a81403b44d65d942ce15 at block 2026-05-02T22:41:02.081782','2026-05-02 22:40:52.454251','2026-05-02 22:41:02.085522',NULL),(178,'AN500-0498997',38,28,'AN500-0498997',NULL,'2026-05-02 22:40:52.444732','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:40:52.420769','2027-05-02 23:59:59.000000',NULL,'0x80edb229f798d4a771799b99be234243f0b6bd3c8e15e2ef7ecae311e7fae67c,0x1236c54e00556be70d806d20d098629b8ad4a013b44ea09bb82094c6cd607b62,0xc7622dc6754f43e53baa98739e8e4d0294c548dc40964f0e587793763e61305b',_binary '','\n[Blockchain] Registered in TX: 0x14839f2c1434329918fe11f3be2654e0dfde0d17eb56a81403b44d65d942ce15 at block 2026-05-02T22:41:02.081819','2026-05-02 22:40:52.457364','2026-05-02 22:41:02.085598',NULL),(179,'AN500-9026087',38,28,'AN500-9026087',NULL,'2026-05-02 22:40:52.447632','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:40:52.420769','2027-05-02 23:59:59.000000',NULL,'0x10fb1ecdbc24192e6e50aa0c5a0a8b12372c4d8ba553a7f1c79d67840c918141,0x25ceef23af160ef4b12e03a8644577a763a08789aa3e772eafca0de938d1b4b6,0xc7622dc6754f43e53baa98739e8e4d0294c548dc40964f0e587793763e61305b',_binary '','\n[Blockchain] Registered in TX: 0x14839f2c1434329918fe11f3be2654e0dfde0d17eb56a81403b44d65d942ce15 at block 2026-05-02T22:41:02.081854','2026-05-02 22:40:52.460985','2026-05-02 22:41:02.085638',NULL),(180,'AN500-8988433',38,28,'AN500-8988433',NULL,'2026-05-02 22:40:52.450708','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:40:52.420769','2027-05-02 23:59:59.000000',NULL,'0x9ccab6a7bc5ab3181737d95634b5b41b829ee4af68ab32d700b232c8abafeb63',_binary '','\n[Blockchain] Registered in TX: 0x14839f2c1434329918fe11f3be2654e0dfde0d17eb56a81403b44d65d942ce15 at block 2026-05-02T22:41:02.081899','2026-05-02 22:40:52.463655','2026-05-02 22:41:02.085676',NULL),(181,'CM200-4926598',39,24,'CM200-4926598',NULL,'2026-05-02 22:43:21.500675','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.572170','2026-05-02 22:43:21.572170',NULL),(182,'CM200-5101505',39,24,'CM200-5101505',NULL,'2026-05-02 22:43:21.502795','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.574838','2026-05-02 22:43:21.574838',NULL),(183,'CM200-5717505',39,24,'CM200-5717505',NULL,'2026-05-02 22:43:21.504951','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.577100','2026-05-02 22:43:21.577100',NULL),(184,'CM200-8947832',39,24,'CM200-8947832',NULL,'2026-05-02 22:43:21.506792','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.579241','2026-05-02 22:43:21.579241',NULL),(185,'CM200-8190928',39,24,'CM200-8190928',NULL,'2026-05-02 22:43:21.508417','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.581333','2026-05-02 22:43:21.581333',NULL),(186,'CM200-0261013',39,24,'CM200-0261013',NULL,'2026-05-02 22:43:21.510489','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.584321','2026-05-02 22:43:21.584321',NULL),(187,'CM200-2893279',39,24,'CM200-2893279',NULL,'2026-05-02 22:43:21.512088','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.588132','2026-05-02 22:43:21.588132',NULL),(188,'CM200-1094540',39,24,'CM200-1094540',NULL,'2026-05-02 22:43:21.515342','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.590762','2026-05-02 22:43:21.590762',NULL),(189,'CM200-1225472',39,24,'CM200-1225472',NULL,'2026-05-02 22:43:21.518079','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.595092','2026-05-02 22:43:21.595092',NULL),(190,'CM200-1972034',39,24,'CM200-1972034',NULL,'2026-05-02 22:43:21.520843','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.599784','2026-05-02 22:43:21.599784',NULL),(191,'CM200-1617356',39,24,'CM200-1617356',NULL,'2026-05-02 22:43:21.522860','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.603129','2026-05-02 22:43:21.603129',NULL),(192,'CM200-8178073',39,24,'CM200-8178073',NULL,'2026-05-02 22:43:21.525416','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.606489','2026-05-02 22:43:21.606489',NULL),(193,'CM200-6568001',39,24,'CM200-6568001',NULL,'2026-05-02 22:43:21.527869','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.610173','2026-05-02 22:43:21.610173',NULL),(194,'CM200-6338095',39,24,'CM200-6338095',NULL,'2026-05-02 22:43:21.529902','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.613251','2026-05-02 22:43:21.613251',NULL),(195,'CM200-9220926',39,24,'CM200-9220926',NULL,'2026-05-02 22:43:21.533534','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.615986','2026-05-02 22:43:21.615986',NULL),(196,'CM200-2509124',39,24,'CM200-2509124',NULL,'2026-05-02 22:43:21.536039','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.618589','2026-05-02 22:43:21.618589',NULL),(197,'CM200-7141217',39,24,'CM200-7141217',NULL,'2026-05-02 22:43:21.540387','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.621734','2026-05-02 22:43:21.621734',NULL),(198,'CM200-1223952',39,24,'CM200-1223952',NULL,'2026-05-02 22:43:21.544425','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.625425','2026-05-02 22:43:21.625425',NULL),(199,'CM200-3999766',39,24,'CM200-3999766',NULL,'2026-05-02 22:43:21.547593','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.628612','2026-05-02 22:43:21.628612',NULL),(200,'CM200-7524769',39,24,'CM200-7524769',NULL,'2026-05-02 22:43:21.553689','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.632039','2026-05-02 22:43:21.632039',NULL),(201,'CM200-3693803',39,24,'CM200-3693803',NULL,'2026-05-02 22:43:21.556662','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.635393','2026-05-02 22:43:21.635393',NULL),(202,'CM200-2043485',39,24,'CM200-2043485',NULL,'2026-05-02 22:43:21.559168','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.638211','2026-05-02 22:43:21.638211',NULL),(203,'CM200-6624755',39,24,'CM200-6624755',NULL,'2026-05-02 22:43:21.561381','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.641174','2026-05-02 22:43:21.641174',NULL),(204,'CM200-5704339',39,24,'CM200-5704339',NULL,'2026-05-02 22:43:21.564094','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.645238','2026-05-02 22:43:21.645238',NULL),(205,'CM200-8541747',39,24,'CM200-8541747',NULL,'2026-05-02 22:43:21.567764','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.648011','2026-05-02 22:43:21.648011',NULL),(206,'CM200-1675474',39,24,'CM200-1675474',NULL,'2026-05-02 22:43:21.571836','MANUFACTURED',NULL,'MANUFACTURER','2026-05-02 22:43:21.475473','2029-05-26 23:59:59.000000',NULL,NULL,_binary '\0',NULL,'2026-05-02 22:43:21.650990','2026-05-02 22:43:21.650990',NULL),(207,'BI-6677841',40,36,'BI-6677841',NULL,'2026-05-23 14:24:11.220884','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xc1ba4dcf49e2b4ebbab9d0787213f99ffc753de9cedf5b628cf72a1185a62e8b,0x47f2ea54718e6a58d51b4bce9050e1ffd37b599437dba2441f47f183f5f1f64a,0x8b017c2e67314a206bed9fb8f783ea884a03dbb88b082b973b737bfcd9eaeb2d,0xe2bf1c22973f45acc42e073f627874085958f269e23fee3b171ec26d2fdce665,0xa09c804aff49b8f756c02a32d86666d7f113fb1624398244ce4e523069f38fbf,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.021591','2026-05-23 14:24:11.343929','2026-05-23 14:24:25.038878',NULL),(208,'BI-1224961',40,36,'BI-1224961',NULL,'2026-05-23 14:24:11.222530','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x7669d999db88e718f5b5511a2b7553af1e5cd5711cd91d034ca517ecaa5defba,0xa107855f5d321aa421b655ca8f68c4b78707b1af6e56ac29a7818b5eef731974,0x64cebdcb7ea7ad9ebec3b82e6d30ad9b54ba60fee37f7944315d5e3d91fc47ae,0x3545d1e0fda9cb0693743402ecd6fdcb477926648a61bbf740c8c6b3221275f4,0x928a9f2297448056e63947607fe32b67f430c4e4c67c4d3ce2f26fcc4d3c51b8,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.021806','2026-05-23 14:24:11.353608','2026-05-23 14:24:25.039032',NULL),(209,'BI-8679270',40,36,'BI-8679270',NULL,'2026-05-23 14:24:11.224198','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x8d3ce93a931927d7d82910c5ea714ec56211921d5df9aeb59b96560bbffe1790,0x33d147f99c48c11361fbeb9944a72895a398be3fb5edb274bb4098bbcaa1f585,0x9af791ae8cb6789f3e7b0495dbbf4db4c45644bad62c68f4344bf6d441cd509f,0xd9eea959fffda2838308aea5d37048e36473058b14f68dd5ba2cb64127f1692e,0x74ef0fa15e3624acd36a034fa1a5a2bf243f3e770094842a3abb517bf5c498ad,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.021851','2026-05-23 14:24:11.355708','2026-05-23 14:24:25.039141',NULL),(210,'BI-7650493',40,36,'BI-7650493',NULL,'2026-05-23 14:24:11.226116','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x92ef34863486d78130abceb59875aa5077ccc0eb8969bb041f152768ed9901f5,0x042a87e9462815ce260ac8ddc5d7e8962f8c961195d610955e8a85c5db82e3bc,0x9af791ae8cb6789f3e7b0495dbbf4db4c45644bad62c68f4344bf6d441cd509f,0xd9eea959fffda2838308aea5d37048e36473058b14f68dd5ba2cb64127f1692e,0x74ef0fa15e3624acd36a034fa1a5a2bf243f3e770094842a3abb517bf5c498ad,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.021950','2026-05-23 14:24:11.357153','2026-05-23 14:24:25.039208',NULL),(211,'BI-0780692',40,36,'BI-0780692',NULL,'2026-05-23 14:24:11.227360','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x53121cbcc987f65b0e951f918bddb49bd0385f35473642ee75f663985785133c,0x9b3187f0d607f153853fb40d6cc9e8717d8e56c96a1bc9e5f2ad254b0339c7ac,0xe28ca23df1c7103635f28e2abba6aa2426013b1eebad340cb08715072019bd7b,0xd3389e7c93963b2df6b24222e34332e5d4c4596f7337a6617605ad1e7290e624,0x9b69ce0684c77eeec95e4d9676f3695353f6e8b55741c2881965fc884c868658,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.021994','2026-05-23 14:24:11.358213','2026-05-23 14:24:25.039259',NULL),(212,'BI-9043384',40,36,'BI-9043384',NULL,'2026-05-23 14:24:11.228285','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xa4e69970d495ea0c6a1a2adf36ce5810c74e7108fa83825c213cb98d1badea24,0x8b2d54d02b067caa1772f29400ffd13c0c7b63340da6835e6a6e8f9ab90f8894,0xf1f09d31df4f43dc6fd9cfa02c7b5a5af8d174f4ac2530d6278d6f273ce9e5b3,0x745d65a2ee1c615e7f8ce1a76925a88abee35345a941a9ebe9840053c256604f,0x74ef0fa15e3624acd36a034fa1a5a2bf243f3e770094842a3abb517bf5c498ad,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022037','2026-05-23 14:24:11.359406','2026-05-23 14:24:25.039307',NULL),(213,'BI-2098732',40,36,'BI-2098732',NULL,'2026-05-23 14:24:11.229158','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x3189047a3c5c62f7f25b31e73eae9dd1237fbbfabbd34e36aba988c4bc57cecb,0x11e35548f7def56710404f0e2b9e71be28a571408816c81cbda60bf75cea0966,0x45f20481fd02ce2fc5caf80e28f9fb7f4c0444038e0be2979a9b6fd332719bfd,0x575f3b26e968d10c25df56174b8ad0a93bb78b7800b57fc9f70a283843b7e31b,0x9b69ce0684c77eeec95e4d9676f3695353f6e8b55741c2881965fc884c868658,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022084','2026-05-23 14:24:11.360458','2026-05-23 14:24:25.039357',NULL),(214,'BI-2268956',40,36,'BI-2268956',NULL,'2026-05-23 14:24:11.229922','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x60530ba39372780c69b1e8f6debf450f07aaa6f33b0c724b6829b4f6876705fb,0x7aa6cd18b93546f456e1b0063441913a9ab4782f5bce68e9c303642ea580ea2f,0xf2bc5ec18ebf72e95d0ae3f840ac86b2e7114a36432dc90b9db914d0af42d4b5,0xf8144182aab417a36b3b44f1fc955ea0bc08c501ce0531006a42c0aea8889578,0x928a9f2297448056e63947607fe32b67f430c4e4c67c4d3ce2f26fcc4d3c51b8,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022123','2026-05-23 14:24:11.361599','2026-05-23 14:24:25.039405',NULL),(215,'BI-1503797',40,36,'BI-1503797',NULL,'2026-05-23 14:24:11.230809','SOLD',NULL,'CONSUMER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xeaa635fe0494d597d5d89df384155a9cb00a2f0803f14a3f7d6d6ca1648fc344,0x5d6794efe3b5d2c74864f94092c020407d1fe6e6328ecd8ad95f71a0fdc57494,0x4af2997598caa1fd55ae9560ad2684f61bcb9c39d0af3d73729cfaefeba34007,0x59c145ed6f05997112e8d02e9b03dadd4872e8cedcf413e0a7b7e1f191d7c9a0,0x4de8d99f9db9bf36f8defcee454a45aca6d7bb89b5ae263344063cf683de0545,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022170','2026-05-23 14:24:11.363343','2026-05-25 20:05:13.936426',NULL),(216,'BI-9113939',40,36,'BI-9113939',NULL,'2026-05-23 14:24:11.232790','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x1e42d231d66b7181f3bb0568a0de92b9cb96e7d99c24e92b8c544e667f77fbe7,0xd67e7e08d4c47a844ced387f3c774f0f272c32ba32219640473daa036e6ffac3,0x8afa64b2b8178237141b31886827f089fe7a45335008b41eca7eed83a0b65baa,0xfe578d6b7adc4a6a4a4b59fa712f1c6d394d4672f17c7a26298b57c637de6ce6,0x8a85cd1b09ddfb113d10cdf332f50bbc341cca92ce19de84885b826b7f0d3559,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022208','2026-05-23 14:24:11.364969','2026-05-23 14:24:25.039516',NULL),(217,'BI-1019170',40,36,'BI-1019170',NULL,'2026-05-23 14:24:11.234430','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x22bd0a3b3b64101a30c4fb87c0c27a93dee3982512e8cd33b08d62148eb8634f,0xf1355c7e62659c0a942c92a5000d9998bb6f240c7834624f3fd900a67675f634,0xdfbd597592f039ed151d44f9ec4e1c294ac688e29f261210066d11416a52d296,0xfe578d6b7adc4a6a4a4b59fa712f1c6d394d4672f17c7a26298b57c637de6ce6,0x8a85cd1b09ddfb113d10cdf332f50bbc341cca92ce19de84885b826b7f0d3559,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022255','2026-05-23 14:24:11.366741','2026-05-23 14:24:25.039565',NULL),(218,'BI-4637160',40,36,'BI-4637160',NULL,'2026-05-23 14:24:11.235338','SOLD',NULL,'CONSUMER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xe13e93978f67af66553f456cec257bae4ba87622317eabc3a807ba9cdc107064,0x220312e7bf63900bccd60d8c9dcab60bd748061129d102228fd1b5b58567b41a,0xf03c76faa2626d7a64131da6ada274931c644c8d3fcbfa80d9ecc34709185cc7,0x22eaa0a9df5d612fd9dfcd57a4b5a1e902d42ea7d33552d31c62d1acfa930ec4,0x4de8d99f9db9bf36f8defcee454a45aca6d7bb89b5ae263344063cf683de0545,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022290','2026-05-23 14:24:11.368814','2026-05-25 20:13:49.911902',NULL),(219,'BI-5209510',40,36,'BI-5209510',NULL,'2026-05-23 14:24:11.236149','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x97c3330d650d7d83a4552bd2c9dd5b1cb63de4e45ca94d63efbb9b471e0f011a,0x56b5a3ef3c6de53a21a0274dc416f5044931f01700842440bf8851212c50c097,0x0fcb6f09b530ab5c5b562c8e65bf8231bc23787e2a2f25ae5f4c4c91a81eaf09,0xd9eea959fffda2838308aea5d37048e36473058b14f68dd5ba2cb64127f1692e,0x74ef0fa15e3624acd36a034fa1a5a2bf243f3e770094842a3abb517bf5c498ad,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022329','2026-05-23 14:24:11.370141','2026-05-23 14:24:25.039682',NULL),(220,'BI-9692692',40,36,'BI-9692692',NULL,'2026-05-23 14:24:11.237072','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x33afec24f94324bb60a87189abcdf49fd41fd32dc0329f934b331e79ba1da6cf,0x48ee2225528740f307af813bffda6a24a1152a3fcd7669885dec60403c35e296,0x45f20481fd02ce2fc5caf80e28f9fb7f4c0444038e0be2979a9b6fd332719bfd,0x575f3b26e968d10c25df56174b8ad0a93bb78b7800b57fc9f70a283843b7e31b,0x9b69ce0684c77eeec95e4d9676f3695353f6e8b55741c2881965fc884c868658,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022361','2026-05-23 14:24:11.371770','2026-05-23 14:24:25.039731',NULL),(221,'BI-5568841',40,36,'BI-5568841',NULL,'2026-05-23 14:24:11.238049','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x0cf527184d893acdc96ca4ff88b52c2173c786cf5302557045b8f7b02c601c6d,0xb05017f53d2ae5470b88b54b67d46da77ca621faf258f2fc3dc2ea25dbb85cd0,0xf173f1727fcbea11aa46179d4f2c66c55e7d733941a4239463b24861207f2d9f,0x36d265e038a14b17be7cfc06cdd18d183486d53d149bab73fd9bc46f1878c244,0x8a85cd1b09ddfb113d10cdf332f50bbc341cca92ce19de84885b826b7f0d3559,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022400','2026-05-23 14:24:11.373045','2026-05-23 14:24:25.039785',NULL),(222,'BI-3829230',40,36,'BI-3829230',NULL,'2026-05-23 14:24:11.238986','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xa110267536799b4fe0c3ffada65c99d99302f072f9094f5778e04efee53aadab,0x5ddf836497067a89116052aa52db9bbf7a5207c4461196401789fd8bbdef1ac3,0xf1f09d31df4f43dc6fd9cfa02c7b5a5af8d174f4ac2530d6278d6f273ce9e5b3,0x745d65a2ee1c615e7f8ce1a76925a88abee35345a941a9ebe9840053c256604f,0x74ef0fa15e3624acd36a034fa1a5a2bf243f3e770094842a3abb517bf5c498ad,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022434','2026-05-23 14:24:11.374113','2026-05-23 14:24:25.039832',NULL),(223,'BI-1286524',40,36,'BI-1286524',NULL,'2026-05-23 14:24:11.239851','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x95fcfdcac3bb8ba4286ff23a4abe1201d0e54b442b0cde77de5aa02ec986df73,0x56b5a3ef3c6de53a21a0274dc416f5044931f01700842440bf8851212c50c097,0x0fcb6f09b530ab5c5b562c8e65bf8231bc23787e2a2f25ae5f4c4c91a81eaf09,0xd9eea959fffda2838308aea5d37048e36473058b14f68dd5ba2cb64127f1692e,0x74ef0fa15e3624acd36a034fa1a5a2bf243f3e770094842a3abb517bf5c498ad,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022471','2026-05-23 14:24:11.375010','2026-05-23 14:24:25.039879',NULL),(224,'BI-2244060',40,36,'BI-2244060',NULL,'2026-05-23 14:24:11.241092','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xfc5d3b2579189cf6d77e6b38c229660fccfd02d02ed6cbc60d9848f1fff21fd2,0xaaac36671593bd443f14df3c112f89e0febab2fb6c1ff7f07a7485edafc84bf6,0x7098d81d454e7fba3cf8ae5889c544ddd6e521879ed76c9cdff418d7c0e4faff,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022507','2026-05-23 14:24:11.376305','2026-05-23 14:24:25.039929',NULL),(225,'BI-2532973',40,36,'BI-2532973',NULL,'2026-05-23 14:24:11.242329','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x1aff17746336049164139353d476d87114368460298d227088a49c5b39f51c65,0xddd872ca0fbee87336ec40ddbf8b2ed7b1fd245f917ac55ee9c1ea887592b5d9,0x8afa64b2b8178237141b31886827f089fe7a45335008b41eca7eed83a0b65baa,0xfe578d6b7adc4a6a4a4b59fa712f1c6d394d4672f17c7a26298b57c637de6ce6,0x8a85cd1b09ddfb113d10cdf332f50bbc341cca92ce19de84885b826b7f0d3559,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022538','2026-05-23 14:24:11.378538','2026-05-23 14:24:25.039976',NULL),(226,'BI-4996357',40,36,'BI-4996357',NULL,'2026-05-23 14:24:11.243644','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x04520112d21ed27e50896de6416ff5bbc74f5cb17319c0c70fec9fc8e16f57c8,0xa8d043f6df7f90566adab709774d8a6b42c6524b100f6106124302b0a2a82c9c,0x78da265c1bb530a9cca27eb3cfeee8ed319094b2487ed11a0dc2c55ab04d79de,0x36d265e038a14b17be7cfc06cdd18d183486d53d149bab73fd9bc46f1878c244,0x8a85cd1b09ddfb113d10cdf332f50bbc341cca92ce19de84885b826b7f0d3559,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022576','2026-05-23 14:24:11.379998','2026-05-23 14:24:25.040024',NULL),(227,'BI-6182610',40,36,'BI-6182610',NULL,'2026-05-23 14:24:11.244954','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x450e92328677894f1d6aa1e10e52a2a029cf96a2bae12e94792c99c94150da0b,0xc3e6ec4bd57508a51e9cca1711fd652f4b6816b5ef71e9743ca3a0e3513cd595,0x75bf98473edc7022afc95dc3ba5a63bf4c3fab84949e329feca40e01a4501ec5,0x575f3b26e968d10c25df56174b8ad0a93bb78b7800b57fc9f70a283843b7e31b,0x9b69ce0684c77eeec95e4d9676f3695353f6e8b55741c2881965fc884c868658,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022608','2026-05-23 14:24:11.381037','2026-05-23 14:24:25.040070',NULL),(228,'BI-2596007',40,36,'BI-2596007',NULL,'2026-05-23 14:24:11.245891','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x4a45aeaae61b3efb221256e3df0e8eccef56795fe0357b56e4929a78705fa5ef,0xe57f828875e8e03fa8941fcfe77cb8627fc50ded5c0109f41cba09a25faead9e,0xe28ca23df1c7103635f28e2abba6aa2426013b1eebad340cb08715072019bd7b,0xd3389e7c93963b2df6b24222e34332e5d4c4596f7337a6617605ad1e7290e624,0x9b69ce0684c77eeec95e4d9676f3695353f6e8b55741c2881965fc884c868658,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022643','2026-05-23 14:24:11.382394','2026-05-23 14:24:25.040118',NULL),(229,'BI-2541069',40,36,'BI-2541069',NULL,'2026-05-23 14:24:11.246773','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xfd12dd0df4552cb556e3887e19809e0856105be0f154c38eccf895ce09f645cd,0xa71b0164d3cbdc3c50a389c69eee1c2fcfb2b71146c6fa56b3bc568448e3a949,0x7098d81d454e7fba3cf8ae5889c544ddd6e521879ed76c9cdff418d7c0e4faff,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022673','2026-05-23 14:24:11.383711','2026-05-23 14:24:25.040164',NULL),(230,'BI-6128515',40,36,'BI-6128515',NULL,'2026-05-23 14:24:11.247677','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xd26177171a708474000db4008fd0e9bc6a7486d2bda5700e2806beb23f838dfe,0xbda435e40fed9bb481535288e9f7985f3e15581272a219303da54b5fd99ab2b5,0x7546be7919d8b14ad9aa1912e9db4c6a5959c3cc006360630d7428aa015f5f9d,0xcb481330103ebde8182c38e38b29a16258e87ff8fc71b6ba7e9d55f797e330c5,0xa09c804aff49b8f756c02a32d86666d7f113fb1624398244ce4e523069f38fbf,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022713','2026-05-23 14:24:11.385358','2026-05-23 14:24:25.040210',NULL),(231,'BI-3488293',40,36,'BI-3488293',NULL,'2026-05-23 14:24:11.248763','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xbb0a9495b81c7c5df76705a52e7c724998a24b581d981af271c726a90d8fd4d3,0x2afb9f45eb6bf11517d8fb73096ee49ce741734a550192357e034efa74f1e8cb,0x03977db3c57c79592d1c6392b64d59ecbb756f6aaf22b13f0a3150226cc4729a,0xe2bf1c22973f45acc42e073f627874085958f269e23fee3b171ec26d2fdce665,0xa09c804aff49b8f756c02a32d86666d7f113fb1624398244ce4e523069f38fbf,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022745','2026-05-23 14:24:11.387322','2026-05-23 14:24:25.040256',NULL),(232,'BI-5669309',40,36,'BI-5669309',NULL,'2026-05-23 14:24:11.250902','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x06d33ef5e78d7a145b9b519f4f2dd6de5ad2ff3a0621897122c73d234678dce4,0xc8f52432155c0b22530f171e0c1c35656b4c4eebec87f09ae10ab0ef714fb0c5,0x78da265c1bb530a9cca27eb3cfeee8ed319094b2487ed11a0dc2c55ab04d79de,0x36d265e038a14b17be7cfc06cdd18d183486d53d149bab73fd9bc46f1878c244,0x8a85cd1b09ddfb113d10cdf332f50bbc341cca92ce19de84885b826b7f0d3559,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.022781','2026-05-23 14:24:11.388986','2026-05-23 14:24:25.040307',NULL),(233,'BI-6098858',40,36,'BI-6098858',NULL,'2026-05-23 14:24:11.251917','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x18eb4e5cd7f09044ce625508f0299b10feddeb587098101d85b125142f35e1e1,0x9db60492655a374fd5f7a0b8f96797ecbe525f85a3086ed2216f9cf8a31b8ca1,0xf173f1727fcbea11aa46179d4f2c66c55e7d733941a4239463b24861207f2d9f,0x36d265e038a14b17be7cfc06cdd18d183486d53d149bab73fd9bc46f1878c244,0x8a85cd1b09ddfb113d10cdf332f50bbc341cca92ce19de84885b826b7f0d3559,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023074','2026-05-23 14:24:11.390736','2026-05-23 14:24:25.040355',NULL),(234,'BI-7241680',40,36,'BI-7241680',NULL,'2026-05-23 14:24:11.252694','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xb78d7c0cc3ae645d3cc623c666598b8778469c2874759379d93e2cb9df708bda,0xe8aaebb96e251b3bbe93b0e0986b0138c4780f84b1e4dfd9a0ca12f969c7bcaa,0x03977db3c57c79592d1c6392b64d59ecbb756f6aaf22b13f0a3150226cc4729a,0xe2bf1c22973f45acc42e073f627874085958f269e23fee3b171ec26d2fdce665,0xa09c804aff49b8f756c02a32d86666d7f113fb1624398244ce4e523069f38fbf,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023190','2026-05-23 14:24:11.392548','2026-05-23 14:24:25.040409',NULL),(235,'BI-7903775',40,36,'BI-7903775',NULL,'2026-05-23 14:24:11.253604','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xdc837c801e641d1855cab6f75413791c2df3b575d561b2c022aa736736af3376,0x967b897bacebaaf0e49460c49d244bd960366955d2eb559aa8a7de2c71d3e2c1,0xf03c76faa2626d7a64131da6ada274931c644c8d3fcbfa80d9ecc34709185cc7,0x22eaa0a9df5d612fd9dfcd57a4b5a1e902d42ea7d33552d31c62d1acfa930ec4,0x4de8d99f9db9bf36f8defcee454a45aca6d7bb89b5ae263344063cf683de0545,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023231','2026-05-23 14:24:11.393776','2026-05-23 14:24:25.040572',NULL),(236,'BI-3849561',40,36,'BI-3849561',NULL,'2026-05-23 14:24:11.254606','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x8a4141f0189e85549b4ce22d63eedef599d5e5b400d5f09bf5d23acb2dee9a1e,0xf92d11eafb450285b3fb8aef4293471181ce4eb97537667ae19b9128c5ac434b,0x3707a6bd75c5c073ff546efa4ba6da2bfa100eed5b9d16857696e5d827e2a5d7,0x3545d1e0fda9cb0693743402ecd6fdcb477926648a61bbf740c8c6b3221275f4,0x928a9f2297448056e63947607fe32b67f430c4e4c67c4d3ce2f26fcc4d3c51b8,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023271','2026-05-23 14:24:11.395301','2026-05-23 14:24:25.040626',NULL),(237,'BI-3097468',40,36,'BI-3097468',NULL,'2026-05-23 14:24:11.255898','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x042cdb43271ef367069dd25e4e014f9dbf9ee0ad47a8fcd4751334434726d1a7,0xa8d043f6df7f90566adab709774d8a6b42c6524b100f6106124302b0a2a82c9c,0x78da265c1bb530a9cca27eb3cfeee8ed319094b2487ed11a0dc2c55ab04d79de,0x36d265e038a14b17be7cfc06cdd18d183486d53d149bab73fd9bc46f1878c244,0x8a85cd1b09ddfb113d10cdf332f50bbc341cca92ce19de84885b826b7f0d3559,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023304','2026-05-23 14:24:11.396983','2026-05-23 14:24:25.040686',NULL),(238,'BI-4223495',40,36,'BI-4223495',NULL,'2026-05-23 14:24:11.256991','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x19193cc7107a0d71872cae85eb7b9d21272be3e101156e432922525dc57995d2,0xddd872ca0fbee87336ec40ddbf8b2ed7b1fd245f917ac55ee9c1ea887592b5d9,0x8afa64b2b8178237141b31886827f089fe7a45335008b41eca7eed83a0b65baa,0xfe578d6b7adc4a6a4a4b59fa712f1c6d394d4672f17c7a26298b57c637de6ce6,0x8a85cd1b09ddfb113d10cdf332f50bbc341cca92ce19de84885b826b7f0d3559,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023341','2026-05-23 14:24:11.398029','2026-05-23 14:24:25.040734',NULL),(239,'BI-0117956',40,36,'BI-0117956',NULL,'2026-05-23 14:24:11.257880','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x336129a5369aff9693e338e941ccfd475a7fa6c4a596af226cf881dae4875982,0x11e35548f7def56710404f0e2b9e71be28a571408816c81cbda60bf75cea0966,0x45f20481fd02ce2fc5caf80e28f9fb7f4c0444038e0be2979a9b6fd332719bfd,0x575f3b26e968d10c25df56174b8ad0a93bb78b7800b57fc9f70a283843b7e31b,0x9b69ce0684c77eeec95e4d9676f3695353f6e8b55741c2881965fc884c868658,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023381','2026-05-23 14:24:11.400065','2026-05-23 14:24:25.040779',NULL),(240,'BI-3483684',40,36,'BI-3483684',NULL,'2026-05-23 14:24:11.259116','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x288f8cc95dcd7ee3905c4afe4bc8a5a09679df24f3b5bf77cb0f8f138f59202e,0xd2c34373c5555b8772bc5cc1834cbc0b173462413bb6f24d7d08325d3c2cfcde,0xdfbd597592f039ed151d44f9ec4e1c294ac688e29f261210066d11416a52d296,0xfe578d6b7adc4a6a4a4b59fa712f1c6d394d4672f17c7a26298b57c637de6ce6,0x8a85cd1b09ddfb113d10cdf332f50bbc341cca92ce19de84885b826b7f0d3559,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023412','2026-05-23 14:24:11.402206','2026-05-23 14:24:25.040825',NULL),(241,'BI-0104097',40,36,'BI-0104097',NULL,'2026-05-23 14:24:11.260187','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x07e735091e4d38276b30c6de927a0c41c4b2ebd5e576c5ef20f94631d8954573,0xb05017f53d2ae5470b88b54b67d46da77ca621faf258f2fc3dc2ea25dbb85cd0,0xf173f1727fcbea11aa46179d4f2c66c55e7d733941a4239463b24861207f2d9f,0x36d265e038a14b17be7cfc06cdd18d183486d53d149bab73fd9bc46f1878c244,0x8a85cd1b09ddfb113d10cdf332f50bbc341cca92ce19de84885b826b7f0d3559,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023447','2026-05-23 14:24:11.404102','2026-05-23 14:24:25.040871',NULL),(242,'BI-4725460',40,36,'BI-4725460',NULL,'2026-05-23 14:24:11.261202','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x714030f42a9dbe04adb3338366f4ba532017492fe0877fe33434fa232e65c3fb,0xd6ecde91f1f4a2d09bcca064c70b6224255115de8c923bf921776595bae378b7,0xd1105e7fa13d6dc54a70475f11ffab6a630eaf912de50347c5df1e1b0d76a4c7,0xf8144182aab417a36b3b44f1fc955ea0bc08c501ce0531006a42c0aea8889578,0x928a9f2297448056e63947607fe32b67f430c4e4c67c4d3ce2f26fcc4d3c51b8,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023480','2026-05-23 14:24:11.405652','2026-05-23 14:24:25.040922',NULL),(243,'BI-9821429',40,36,'BI-9821429',NULL,'2026-05-23 14:24:11.262037','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xe070730d4eab8298fb8374b3f92eb32055d105aa69825ff6c4305c66cea85a3e,0x967b897bacebaaf0e49460c49d244bd960366955d2eb559aa8a7de2c71d3e2c1,0xf03c76faa2626d7a64131da6ada274931c644c8d3fcbfa80d9ecc34709185cc7,0x22eaa0a9df5d612fd9dfcd57a4b5a1e902d42ea7d33552d31c62d1acfa930ec4,0x4de8d99f9db9bf36f8defcee454a45aca6d7bb89b5ae263344063cf683de0545,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023519','2026-05-23 14:24:11.406698','2026-05-23 14:24:25.040969',NULL),(244,'BI-8214459',40,36,'BI-8214459',NULL,'2026-05-23 14:24:11.262769','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xe8b4a59bc82afec8989553a7815db1d5c7ed5c8946477dffcacdaab77233789e,0xb6800271ca63aedc899b7c3d3c337c74852e2e396963efa31ea2c4a63b8e3af7,0xc8eb8f96ca0a8b1240f2c8d389ee72c7782f6761aa423f348996f53f64e95dde,0x59c145ed6f05997112e8d02e9b03dadd4872e8cedcf413e0a7b7e1f191d7c9a0,0x4de8d99f9db9bf36f8defcee454a45aca6d7bb89b5ae263344063cf683de0545,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023551','2026-05-23 14:24:11.407633','2026-05-23 14:24:25.041017',NULL),(245,'BI-5366733',40,36,'BI-5366733',NULL,'2026-05-23 14:24:11.263533','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xac2b41068a76c407bc8c784bd14a4e747f2af1a3b24784189cd085dbcc52a595,0xf3e562175125b2c804224f74e0176162925f0f40e6659296dbaeb8bfbefde687,0xeb77cd96556756ec85f547e2b0a758609b1b7d1a010d75f1318f22733f7c30e6,0x745d65a2ee1c615e7f8ce1a76925a88abee35345a941a9ebe9840053c256604f,0x74ef0fa15e3624acd36a034fa1a5a2bf243f3e770094842a3abb517bf5c498ad,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023589','2026-05-23 14:24:11.408599','2026-05-23 14:24:25.041070',NULL),(246,'BI-0830586',40,36,'BI-0830586',NULL,'2026-05-23 14:24:11.264960','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x34f5045dc974e1448b2986f98c7e2f1a73fce44803c62f3ba417c7b61f0a989d,0x48ee2225528740f307af813bffda6a24a1152a3fcd7669885dec60403c35e296,0x45f20481fd02ce2fc5caf80e28f9fb7f4c0444038e0be2979a9b6fd332719bfd,0x575f3b26e968d10c25df56174b8ad0a93bb78b7800b57fc9f70a283843b7e31b,0x9b69ce0684c77eeec95e4d9676f3695353f6e8b55741c2881965fc884c868658,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023622','2026-05-23 14:24:11.409595','2026-05-23 14:24:25.041116',NULL),(247,'BI-3932489',40,36,'BI-3932489',NULL,'2026-05-23 14:24:11.267592','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x5cffdd138bb3ead2cac42ffd9964d5a5578464a9cd80d5a0753a7addadb916f9,0x572b8f2f4ec7234da6aafd8ea4c79182fff598565bac0d1839854cceb0dffbdb,0x7926cfed673ab62209bb38612a3d9a0eb1a821a14ea8494ed736109d8bc30d0d,0xd3389e7c93963b2df6b24222e34332e5d4c4596f7337a6617605ad1e7290e624,0x9b69ce0684c77eeec95e4d9676f3695353f6e8b55741c2881965fc884c868658,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023662','2026-05-23 14:24:11.410634','2026-05-23 14:24:25.041167',NULL),(248,'BI-3860036',40,36,'BI-3860036',NULL,'2026-05-23 14:24:11.268896','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xe59e13221ff19872cb3945d3e708c5779b7875ffb89dce777ef66029a21fd6a3,0xe063cd15e071208ec424238df5572e40548d4da2487457d1c9a4a433b256cf96,0xc8eb8f96ca0a8b1240f2c8d389ee72c7782f6761aa423f348996f53f64e95dde,0x59c145ed6f05997112e8d02e9b03dadd4872e8cedcf413e0a7b7e1f191d7c9a0,0x4de8d99f9db9bf36f8defcee454a45aca6d7bb89b5ae263344063cf683de0545,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023695','2026-05-23 14:24:11.411653','2026-05-23 14:24:25.041284',NULL),(249,'BI-8629709',40,36,'BI-8629709',NULL,'2026-05-23 14:24:11.270649','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x07cb4a92a1e20568d2c80a63fab4a9c466836c3354e6a37cfc39ae6bc4ab221e,0xc8f52432155c0b22530f171e0c1c35656b4c4eebec87f09ae10ab0ef714fb0c5,0x78da265c1bb530a9cca27eb3cfeee8ed319094b2487ed11a0dc2c55ab04d79de,0x36d265e038a14b17be7cfc06cdd18d183486d53d149bab73fd9bc46f1878c244,0x8a85cd1b09ddfb113d10cdf332f50bbc341cca92ce19de84885b826b7f0d3559,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023725','2026-05-23 14:24:11.412597','2026-05-23 14:24:25.041369',NULL),(250,'BI-8736259',40,36,'BI-8736259',NULL,'2026-05-23 14:24:11.272323','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xc2ecfc037e3f36dde53554bafd4485911d28f372c607787be838000a28d732a9,0xa589bd7a088c472e4f193d1745272b0f7eaba8bea35df8ddee3c8127d11a29f5,0x8b017c2e67314a206bed9fb8f783ea884a03dbb88b082b973b737bfcd9eaeb2d,0xe2bf1c22973f45acc42e073f627874085958f269e23fee3b171ec26d2fdce665,0xa09c804aff49b8f756c02a32d86666d7f113fb1624398244ce4e523069f38fbf,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023764','2026-05-23 14:24:11.413849','2026-05-23 14:24:25.041428',NULL),(251,'BI-8681035',40,36,'BI-8681035',NULL,'2026-05-23 14:24:11.273864','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xd5580970783df705997eaba06eaa13d3af71e1b17d1d951648251b142ee47511,0xc79b8717b917b2f16d852f5d065298a3c078d840ebfe8e108ba1b913d6ae84ff,0xbcf0f541ed45d631685365f8b0cda3b9479dfb4e25a418b23abbba145969b441,0x22eaa0a9df5d612fd9dfcd57a4b5a1e902d42ea7d33552d31c62d1acfa930ec4,0x4de8d99f9db9bf36f8defcee454a45aca6d7bb89b5ae263344063cf683de0545,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023796','2026-05-23 14:24:11.414854','2026-05-23 14:24:25.041481',NULL),(252,'BI-3886793',40,36,'BI-3886793',NULL,'2026-05-23 14:24:11.275254','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xfec38cdc35720c9c4a890f91f627dd709ab6a93efea15f5608ae0b41b1a228b7,0xa71b0164d3cbdc3c50a389c69eee1c2fcfb2b71146c6fa56b3bc568448e3a949,0x7098d81d454e7fba3cf8ae5889c544ddd6e521879ed76c9cdff418d7c0e4faff,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023833','2026-05-23 14:24:11.415839','2026-05-23 14:24:25.041536',NULL),(253,'BI-2560775',40,36,'BI-2560775',NULL,'2026-05-23 14:24:11.276532','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x81aca6973b00a51f1a0f9e78b6a477a3a435cdf2a74b5b2893d10b6d59ba8334,0x8e377004419e233a659cfd8832b6d8e6c04e723cf0269afbb4358f77d61d3692,0x64cebdcb7ea7ad9ebec3b82e6d30ad9b54ba60fee37f7944315d5e3d91fc47ae,0x3545d1e0fda9cb0693743402ecd6fdcb477926648a61bbf740c8c6b3221275f4,0x928a9f2297448056e63947607fe32b67f430c4e4c67c4d3ce2f26fcc4d3c51b8,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023863','2026-05-23 14:24:11.416785','2026-05-23 14:24:25.041604',NULL),(254,'BI-3416858',40,36,'BI-3416858',NULL,'2026-05-23 14:24:11.277525','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x8551f34e6b1f9d710bffd43922af20f9a6da8fbaab8bd8a353ec0806e49f0981,0x1c3d909891c562fde2a51917cba12624e417034760c3552422a4c08067138541,0x3707a6bd75c5c073ff546efa4ba6da2bfa100eed5b9d16857696e5d827e2a5d7,0x3545d1e0fda9cb0693743402ecd6fdcb477926648a61bbf740c8c6b3221275f4,0x928a9f2297448056e63947607fe32b67f430c4e4c67c4d3ce2f26fcc4d3c51b8,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023902','2026-05-23 14:24:11.418769','2026-05-23 14:24:25.041663',NULL),(255,'BI-0240468',40,36,'BI-0240468',NULL,'2026-05-23 14:24:11.278298','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xc851dd50a8836d203f733ae7d0acf8bf8c4045c27b3c10fa93686ecc22984a15,0x104691c4c3d8d71944ee24f070f23274bd93cad7c8396ea514baa9e911e867c0,0x7601c963ddfb66b694961dfbeebe41d32d41e9d580d317f7afe3191878f60ba0,0xcb481330103ebde8182c38e38b29a16258e87ff8fc71b6ba7e9d55f797e330c5,0xa09c804aff49b8f756c02a32d86666d7f113fb1624398244ce4e523069f38fbf,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023933','2026-05-23 14:24:11.420847','2026-05-23 14:24:25.041715',NULL),(256,'BI-6467515',40,36,'BI-6467515',NULL,'2026-05-23 14:24:11.279220','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xc8312857254f41d4aeacd65eef6898157c453c687c48fb2b404c6d626308be87,0xa589bd7a088c472e4f193d1745272b0f7eaba8bea35df8ddee3c8127d11a29f5,0x8b017c2e67314a206bed9fb8f783ea884a03dbb88b082b973b737bfcd9eaeb2d,0xe2bf1c22973f45acc42e073f627874085958f269e23fee3b171ec26d2fdce665,0xa09c804aff49b8f756c02a32d86666d7f113fb1624398244ce4e523069f38fbf,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.023996','2026-05-23 14:24:11.422536','2026-05-23 14:24:25.041762',NULL),(257,'BI-8620640',40,36,'BI-8620640',NULL,'2026-05-23 14:24:11.280002','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x59b08c53602c962d974c0ab637d96753643192deb53bf9787679af3a0d856d4f,0x0921426ea25b0e4d5b34ec8ebba8134f84da7d629f16ca7ee38534ab2e96b75d,0x7926cfed673ab62209bb38612a3d9a0eb1a821a14ea8494ed736109d8bc30d0d,0xd3389e7c93963b2df6b24222e34332e5d4c4596f7337a6617605ad1e7290e624,0x9b69ce0684c77eeec95e4d9676f3695353f6e8b55741c2881965fc884c868658,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024031','2026-05-23 14:24:11.423917','2026-05-23 14:24:25.041808',NULL),(258,'BI-3911142',40,36,'BI-3911142',NULL,'2026-05-23 14:24:11.281094','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xfcadfae5b30b1ae4f124ce28af28fcc8f34b81047ddc195158c8e67d76f09edd,0xaaac36671593bd443f14df3c112f89e0febab2fb6c1ff7f07a7485edafc84bf6,0x7098d81d454e7fba3cf8ae5889c544ddd6e521879ed76c9cdff418d7c0e4faff,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024067','2026-05-23 14:24:11.424781','2026-05-23 14:24:25.041855',NULL),(259,'BI-9135802',40,36,'BI-9135802',NULL,'2026-05-23 14:24:11.282317','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xd73196ee668009a1dd0b609beab4b3899402358b021eea844b1f775895ccbc8a,0xc79b8717b917b2f16d852f5d065298a3c078d840ebfe8e108ba1b913d6ae84ff,0xbcf0f541ed45d631685365f8b0cda3b9479dfb4e25a418b23abbba145969b441,0x22eaa0a9df5d612fd9dfcd57a4b5a1e902d42ea7d33552d31c62d1acfa930ec4,0x4de8d99f9db9bf36f8defcee454a45aca6d7bb89b5ae263344063cf683de0545,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024098','2026-05-23 14:24:11.425798','2026-05-23 14:24:25.041901',NULL),(260,'BI-3994973',40,36,'BI-3994973',NULL,'2026-05-23 14:24:11.284410','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x9abdfd6fedf15d1f6d8282ea65a9b8dc240d6ef5580720ca16631c653d9ae78e,0xae435dbe5ee625f51032a63725e7d059f4375a009b6fec40a02135fd5a38e179,0x0fcb6f09b530ab5c5b562c8e65bf8231bc23787e2a2f25ae5f4c4c91a81eaf09,0xd9eea959fffda2838308aea5d37048e36473058b14f68dd5ba2cb64127f1692e,0x74ef0fa15e3624acd36a034fa1a5a2bf243f3e770094842a3abb517bf5c498ad,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024135','2026-05-23 14:24:11.426911','2026-05-23 14:24:25.041946',NULL),(261,'BI-4867234',40,36,'BI-4867234',NULL,'2026-05-23 14:24:11.285373','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x527878c52fe0ea7d0ebca3d6acc6a93493045c05d2d19839cb95dcd5748cb2ba,0x9b3187f0d607f153853fb40d6cc9e8717d8e56c96a1bc9e5f2ad254b0339c7ac,0xe28ca23df1c7103635f28e2abba6aa2426013b1eebad340cb08715072019bd7b,0xd3389e7c93963b2df6b24222e34332e5d4c4596f7337a6617605ad1e7290e624,0x9b69ce0684c77eeec95e4d9676f3695353f6e8b55741c2881965fc884c868658,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024166','2026-05-23 14:24:11.427965','2026-05-23 14:24:25.041988',NULL),(262,'BI-5653399',40,36,'BI-5653399',NULL,'2026-05-23 14:24:11.286223','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x4651198fedfb85215d75626076bf2d7535728232c9c39cfc23b87746e6209cda,0xcefe87d6a38173101ef65c01312e945d1694d3d1787c1238b721b772f93865e9,0x75bf98473edc7022afc95dc3ba5a63bf4c3fab84949e329feca40e01a4501ec5,0x575f3b26e968d10c25df56174b8ad0a93bb78b7800b57fc9f70a283843b7e31b,0x9b69ce0684c77eeec95e4d9676f3695353f6e8b55741c2881965fc884c868658,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024208','2026-05-23 14:24:11.428815','2026-05-23 14:24:25.042030',NULL),(263,'BI-9052105',40,36,'BI-9052105',NULL,'2026-05-23 14:24:11.287006','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x45a5bf2d020a1fe3cb66194d0029aeeb910c28bbd250c167c4c1d8cee6923360,0xcefe87d6a38173101ef65c01312e945d1694d3d1787c1238b721b772f93865e9,0x75bf98473edc7022afc95dc3ba5a63bf4c3fab84949e329feca40e01a4501ec5,0x575f3b26e968d10c25df56174b8ad0a93bb78b7800b57fc9f70a283843b7e31b,0x9b69ce0684c77eeec95e4d9676f3695353f6e8b55741c2881965fc884c868658,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024242','2026-05-23 14:24:11.429652','2026-05-23 14:24:25.042073',NULL),(264,'BI-2597680',40,36,'BI-2597680',NULL,'2026-05-23 14:24:11.287902','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x6ca6366dc322f01e8099f24990f6d9d81bf84eb59c5559aea5e61d6620f79789,0x460926000e137d8bf13ae62844f2967f564029cbe35b01e01c5be062225e415f,0xd1105e7fa13d6dc54a70475f11ffab6a630eaf912de50347c5df1e1b0d76a4c7,0xf8144182aab417a36b3b44f1fc955ea0bc08c501ce0531006a42c0aea8889578,0x928a9f2297448056e63947607fe32b67f430c4e4c67c4d3ce2f26fcc4d3c51b8,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024272','2026-05-23 14:24:11.430454','2026-05-23 14:24:25.042113',NULL),(265,'BI-0655291',40,36,'BI-0655291',NULL,'2026-05-23 14:24:11.289233','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xe5dbad4ce3d2d12ebfc958eb012d0463a37d2a944e9e00ced3ebc5f1ac9d8394,0xe063cd15e071208ec424238df5572e40548d4da2487457d1c9a4a433b256cf96,0xc8eb8f96ca0a8b1240f2c8d389ee72c7782f6761aa423f348996f53f64e95dde,0x59c145ed6f05997112e8d02e9b03dadd4872e8cedcf413e0a7b7e1f191d7c9a0,0x4de8d99f9db9bf36f8defcee454a45aca6d7bb89b5ae263344063cf683de0545,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024319','2026-05-23 14:24:11.431666','2026-05-23 14:24:25.042158',NULL),(266,'BI-8975220',40,36,'BI-8975220',NULL,'2026-05-23 14:24:11.290468','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xce27b90899c2590cc40a58fb4fc2038b3141f3e3a7c5a60bf1c2e5bc8d5fd024,0x82e37c938e1d47f1772956ed68d6f06b2340b636e1498f56b1696c74e59bae4f,0x7601c963ddfb66b694961dfbeebe41d32d41e9d580d317f7afe3191878f60ba0,0xcb481330103ebde8182c38e38b29a16258e87ff8fc71b6ba7e9d55f797e330c5,0xa09c804aff49b8f756c02a32d86666d7f113fb1624398244ce4e523069f38fbf,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024351','2026-05-23 14:24:11.433156','2026-05-23 14:24:25.042200',NULL),(267,'BI-2501096',40,36,'BI-2501096',NULL,'2026-05-23 14:24:11.291469','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xf6ea7c4bfdf61e318b23a7cb7e722b4bdb834e608a4c62b14c898d55517c70bb,0xf25244d364c4fb76981e8351b764622dee2bdfd67ac7993a6820650f44aef60e,0x4af2997598caa1fd55ae9560ad2684f61bcb9c39d0af3d73729cfaefeba34007,0x59c145ed6f05997112e8d02e9b03dadd4872e8cedcf413e0a7b7e1f191d7c9a0,0x4de8d99f9db9bf36f8defcee454a45aca6d7bb89b5ae263344063cf683de0545,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024389','2026-05-23 14:24:11.435417','2026-05-23 14:24:25.042238',NULL),(268,'BI-1277130',40,36,'BI-1277130',NULL,'2026-05-23 14:24:11.293570','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x7049534013d1fea4da55e604ccfc377136e1e9411591022a9a670359d45f498e,0x460926000e137d8bf13ae62844f2967f564029cbe35b01e01c5be062225e415f,0xd1105e7fa13d6dc54a70475f11ffab6a630eaf912de50347c5df1e1b0d76a4c7,0xf8144182aab417a36b3b44f1fc955ea0bc08c501ce0531006a42c0aea8889578,0x928a9f2297448056e63947607fe32b67f430c4e4c67c4d3ce2f26fcc4d3c51b8,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024420','2026-05-23 14:24:11.436885','2026-05-23 14:24:25.042275',NULL),(269,'BI-3538363',40,36,'BI-3538363',NULL,'2026-05-23 14:24:11.294693','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xd2b7db34c9191a8c1e72fe7d2d52fbee45df36fe9d4e3d80da41738ea3693cd8,0xd75823e8763ecae74bb92f8bd66054d1046376621de5c951c31d079fcbdc2361,0xbcf0f541ed45d631685365f8b0cda3b9479dfb4e25a418b23abbba145969b441,0x22eaa0a9df5d612fd9dfcd57a4b5a1e902d42ea7d33552d31c62d1acfa930ec4,0x4de8d99f9db9bf36f8defcee454a45aca6d7bb89b5ae263344063cf683de0545,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024458','2026-05-23 14:24:11.438394','2026-05-23 14:24:25.042314',NULL),(270,'BI-9619331',40,36,'BI-9619331',NULL,'2026-05-23 14:24:11.296471','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x851641e852d9f11bb6751f603d4e3ece2b2824e78485670fe67ea45447c9c18c,0x1c3d909891c562fde2a51917cba12624e417034760c3552422a4c08067138541,0x3707a6bd75c5c073ff546efa4ba6da2bfa100eed5b9d16857696e5d827e2a5d7,0x3545d1e0fda9cb0693743402ecd6fdcb477926648a61bbf740c8c6b3221275f4,0x928a9f2297448056e63947607fe32b67f430c4e4c67c4d3ce2f26fcc4d3c51b8,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024524','2026-05-23 14:24:11.440243','2026-05-23 14:24:25.042353',NULL),(271,'BI-1463726',40,36,'BI-1463726',NULL,'2026-05-23 14:24:11.297472','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x6b8f7fb942ec5bbddeb2e090cbb002eeb19bae665d4f36ebc7c375cd54b06bfa,0x655f43bb2d81cf6bb0c7a9bfabc498ea4759720aff40130af6e54773c9255bbe,0xf2bc5ec18ebf72e95d0ae3f840ac86b2e7114a36432dc90b9db914d0af42d4b5,0xf8144182aab417a36b3b44f1fc955ea0bc08c501ce0531006a42c0aea8889578,0x928a9f2297448056e63947607fe32b67f430c4e4c67c4d3ce2f26fcc4d3c51b8,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024558','2026-05-23 14:24:11.442305','2026-05-23 14:24:25.042393',NULL),(272,'BI-2186800',40,36,'BI-2186800',NULL,'2026-05-23 14:24:11.298236','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xec3016ce57f369151f312ee0e1778f3812ae3172369219ef84e7dd692be82f3f,0xf25244d364c4fb76981e8351b764622dee2bdfd67ac7993a6820650f44aef60e,0x4af2997598caa1fd55ae9560ad2684f61bcb9c39d0af3d73729cfaefeba34007,0x59c145ed6f05997112e8d02e9b03dadd4872e8cedcf413e0a7b7e1f191d7c9a0,0x4de8d99f9db9bf36f8defcee454a45aca6d7bb89b5ae263344063cf683de0545,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024589','2026-05-23 14:24:11.443696','2026-05-23 14:24:25.042431',NULL),(273,'BI-0855381',40,36,'BI-0855381',NULL,'2026-05-23 14:24:11.299023','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x7d2bfbf4fcce615aee17bb919ac7a91cf1f1d3de5d6f5e6b9516f426ad6747ca,0x8e377004419e233a659cfd8832b6d8e6c04e723cf0269afbb4358f77d61d3692,0x64cebdcb7ea7ad9ebec3b82e6d30ad9b54ba60fee37f7944315d5e3d91fc47ae,0x3545d1e0fda9cb0693743402ecd6fdcb477926648a61bbf740c8c6b3221275f4,0x928a9f2297448056e63947607fe32b67f430c4e4c67c4d3ce2f26fcc4d3c51b8,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024621','2026-05-23 14:24:11.444641','2026-05-23 14:24:25.042468',NULL),(274,'BI-9634943',40,36,'BI-9634943',NULL,'2026-05-23 14:24:11.299914','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xab1f1f0845c889dfafa4641a131cb2468e8284abea3514898af03dc0a7e08931,0xd839a89fc8306edff9fa9f3deb302736a955cbab708763d75b2642fa6ad5fea9,0xeb77cd96556756ec85f547e2b0a758609b1b7d1a010d75f1318f22733f7c30e6,0x745d65a2ee1c615e7f8ce1a76925a88abee35345a941a9ebe9840053c256604f,0x74ef0fa15e3624acd36a034fa1a5a2bf243f3e770094842a3abb517bf5c498ad,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024670','2026-05-23 14:24:11.445528','2026-05-23 14:24:25.042512',NULL),(275,'BI-5581137',40,36,'BI-5581137',NULL,'2026-05-23 14:24:11.301997','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xe8f21317c18d6d80aaa5061ce2f4c5558bc1326ded663d2c3bc00a1242f9794d,0x5d6794efe3b5d2c74864f94092c020407d1fe6e6328ecd8ad95f71a0fdc57494,0x4af2997598caa1fd55ae9560ad2684f61bcb9c39d0af3d73729cfaefeba34007,0x59c145ed6f05997112e8d02e9b03dadd4872e8cedcf413e0a7b7e1f191d7c9a0,0x4de8d99f9db9bf36f8defcee454a45aca6d7bb89b5ae263344063cf683de0545,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024701','2026-05-23 14:24:11.446406','2026-05-23 14:24:25.042568',NULL),(276,'BI-5942454',40,36,'BI-5942454',NULL,'2026-05-23 14:24:11.303495','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x9e658569f7b7108a27329b0ff2da7bffdb69383df8cf8f676fb3f75e7143d01b,0x5ddf836497067a89116052aa52db9bbf7a5207c4461196401789fd8bbdef1ac3,0xf1f09d31df4f43dc6fd9cfa02c7b5a5af8d174f4ac2530d6278d6f273ce9e5b3,0x745d65a2ee1c615e7f8ce1a76925a88abee35345a941a9ebe9840053c256604f,0x74ef0fa15e3624acd36a034fa1a5a2bf243f3e770094842a3abb517bf5c498ad,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024737','2026-05-23 14:24:11.449155','2026-05-23 14:24:25.042607',NULL),(277,'BI-2583804',40,36,'BI-2583804',NULL,'2026-05-23 14:24:11.304560','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x4227c82250383608779abb31b818ee63a130912ad8b8d9ee73f795a332f829e3,0xc3e6ec4bd57508a51e9cca1711fd652f4b6816b5ef71e9743ca3a0e3513cd595,0x75bf98473edc7022afc95dc3ba5a63bf4c3fab84949e329feca40e01a4501ec5,0x575f3b26e968d10c25df56174b8ad0a93bb78b7800b57fc9f70a283843b7e31b,0x9b69ce0684c77eeec95e4d9676f3695353f6e8b55741c2881965fc884c868658,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024767','2026-05-23 14:24:11.450741','2026-05-23 14:24:25.042645',NULL),(278,'BI-9186656',40,36,'BI-9186656',NULL,'2026-05-23 14:24:11.306000','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x22b185c784dde14b725dc4defb5847616125551926fb3ee703ac33a52ed520fa,0xd67e7e08d4c47a844ced387f3c774f0f272c32ba32219640473daa036e6ffac3,0x8afa64b2b8178237141b31886827f089fe7a45335008b41eca7eed83a0b65baa,0xfe578d6b7adc4a6a4a4b59fa712f1c6d394d4672f17c7a26298b57c637de6ce6,0x8a85cd1b09ddfb113d10cdf332f50bbc341cca92ce19de84885b826b7f0d3559,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024802','2026-05-23 14:24:11.452620','2026-05-23 14:24:25.042682',NULL),(279,'BI-6764377',40,36,'BI-6764377',NULL,'2026-05-23 14:24:11.307418','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x989c455350b0d242345c53af492dee402fd2873bcf32e8c60f1bb02b7b4c3319,0xae435dbe5ee625f51032a63725e7d059f4375a009b6fec40a02135fd5a38e179,0x0fcb6f09b530ab5c5b562c8e65bf8231bc23787e2a2f25ae5f4c4c91a81eaf09,0xd9eea959fffda2838308aea5d37048e36473058b14f68dd5ba2cb64127f1692e,0x74ef0fa15e3624acd36a034fa1a5a2bf243f3e770094842a3abb517bf5c498ad,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024856','2026-05-23 14:24:11.453819','2026-05-23 14:24:25.042731',NULL),(280,'BI-5264124',40,36,'BI-5264124',NULL,'2026-05-23 14:24:11.309680','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x62258ca5b602640adf854e3febcb2b162163c4bb9014a1fe0eefde4fa768f1f4,0x7aa6cd18b93546f456e1b0063441913a9ab4782f5bce68e9c303642ea580ea2f,0xf2bc5ec18ebf72e95d0ae3f840ac86b2e7114a36432dc90b9db914d0af42d4b5,0xf8144182aab417a36b3b44f1fc955ea0bc08c501ce0531006a42c0aea8889578,0x928a9f2297448056e63947607fe32b67f430c4e4c67c4d3ce2f26fcc4d3c51b8,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024891','2026-05-23 14:24:11.454660','2026-05-23 14:24:25.042769',NULL),(281,'BI-4378863',40,36,'BI-4378863',NULL,'2026-05-23 14:24:11.310911','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xb9b6d9ea1ddb043f31f92370df7cbdeed2cb2f3a556d363c96515886a7b7847d,0x2afb9f45eb6bf11517d8fb73096ee49ce741734a550192357e034efa74f1e8cb,0x03977db3c57c79592d1c6392b64d59ecbb756f6aaf22b13f0a3150226cc4729a,0xe2bf1c22973f45acc42e073f627874085958f269e23fee3b171ec26d2fdce665,0xa09c804aff49b8f756c02a32d86666d7f113fb1624398244ce4e523069f38fbf,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024929','2026-05-23 14:24:11.455857','2026-05-23 14:24:25.042806',NULL),(282,'BI-9410826',40,36,'BI-9410826',NULL,'2026-05-23 14:24:11.311835','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xe5e1a3addc260813069441e5621bc4ecdaa0c54488f87a00e55cc08cdac6b3f8,0xb6800271ca63aedc899b7c3d3c337c74852e2e396963efa31ea2c4a63b8e3af7,0xc8eb8f96ca0a8b1240f2c8d389ee72c7782f6761aa423f348996f53f64e95dde,0x59c145ed6f05997112e8d02e9b03dadd4872e8cedcf413e0a7b7e1f191d7c9a0,0x4de8d99f9db9bf36f8defcee454a45aca6d7bb89b5ae263344063cf683de0545,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.024970','2026-05-23 14:24:11.457886','2026-05-23 14:24:25.042843',NULL),(283,'BI-0465857',40,36,'BI-0465857',NULL,'2026-05-23 14:24:11.312745','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xb68688fd025a429d774bf134c0044b9b604ccf3778528083a7da259929af2cfb,0xe8aaebb96e251b3bbe93b0e0986b0138c4780f84b1e4dfd9a0ca12f969c7bcaa,0x03977db3c57c79592d1c6392b64d59ecbb756f6aaf22b13f0a3150226cc4729a,0xe2bf1c22973f45acc42e073f627874085958f269e23fee3b171ec26d2fdce665,0xa09c804aff49b8f756c02a32d86666d7f113fb1624398244ce4e523069f38fbf,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025001','2026-05-23 14:24:11.459768','2026-05-23 14:24:25.042880',NULL),(284,'BI-3346466',40,36,'BI-3346466',NULL,'2026-05-23 14:24:11.313639','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x7172ae3a59e1510e72f7dc4a13f057fe14f3d1487f9e65fbc12adbe4ec766323,0xd6ecde91f1f4a2d09bcca064c70b6224255115de8c923bf921776595bae378b7,0xd1105e7fa13d6dc54a70475f11ffab6a630eaf912de50347c5df1e1b0d76a4c7,0xf8144182aab417a36b3b44f1fc955ea0bc08c501ce0531006a42c0aea8889578,0x928a9f2297448056e63947607fe32b67f430c4e4c67c4d3ce2f26fcc4d3c51b8,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025037','2026-05-23 14:24:11.461029','2026-05-23 14:24:25.042922',NULL),(285,'BI-6971452',40,36,'BI-6971452',NULL,'2026-05-23 14:24:11.314617','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xe23e798c3fdbbd0560539624aa605594337442637d4aed35e7c64a5b48c0f1d2,0x220312e7bf63900bccd60d8c9dcab60bd748061129d102228fd1b5b58567b41a,0xf03c76faa2626d7a64131da6ada274931c644c8d3fcbfa80d9ecc34709185cc7,0x22eaa0a9df5d612fd9dfcd57a4b5a1e902d42ea7d33552d31c62d1acfa930ec4,0x4de8d99f9db9bf36f8defcee454a45aca6d7bb89b5ae263344063cf683de0545,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025068','2026-05-23 14:24:11.461951','2026-05-23 14:24:25.042970',NULL),(286,'BI-9534607',40,36,'BI-9534607',NULL,'2026-05-23 14:24:11.316138','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xbe1fa79fcf433fc12eb3170cea51091cc8e48c1bda4019d1aa34791fccf567b5,0x47f2ea54718e6a58d51b4bce9050e1ffd37b599437dba2441f47f183f5f1f64a,0x8b017c2e67314a206bed9fb8f783ea884a03dbb88b082b973b737bfcd9eaeb2d,0xe2bf1c22973f45acc42e073f627874085958f269e23fee3b171ec26d2fdce665,0xa09c804aff49b8f756c02a32d86666d7f113fb1624398244ce4e523069f38fbf,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025099','2026-05-23 14:24:11.462772','2026-05-23 14:24:25.043016',NULL),(287,'BI-0861458',40,36,'BI-0861458',NULL,'2026-05-23 14:24:11.318356','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xb2b8b9adb6e14f547c242a327b9a2b38e9535355fa822d4a192bb1eb376a29cb,0xf3e562175125b2c804224f74e0176162925f0f40e6659296dbaeb8bfbefde687,0xeb77cd96556756ec85f547e2b0a758609b1b7d1a010d75f1318f22733f7c30e6,0x745d65a2ee1c615e7f8ce1a76925a88abee35345a941a9ebe9840053c256604f,0x74ef0fa15e3624acd36a034fa1a5a2bf243f3e770094842a3abb517bf5c498ad,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025172','2026-05-23 14:24:11.463615','2026-05-23 14:24:25.043054',NULL),(288,'BI-2809551',40,36,'BI-2809551',NULL,'2026-05-23 14:24:11.319484','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xa61af52159046115c9ca145a6b3ffb4d0d58451f647432064bbdf21c37142570,0xd839a89fc8306edff9fa9f3deb302736a955cbab708763d75b2642fa6ad5fea9,0xeb77cd96556756ec85f547e2b0a758609b1b7d1a010d75f1318f22733f7c30e6,0x745d65a2ee1c615e7f8ce1a76925a88abee35345a941a9ebe9840053c256604f,0x74ef0fa15e3624acd36a034fa1a5a2bf243f3e770094842a3abb517bf5c498ad,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025202','2026-05-23 14:24:11.464495','2026-05-23 14:24:25.043091',NULL),(289,'BI-0635082',40,36,'BI-0635082',NULL,'2026-05-23 14:24:11.320402','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x2bd6a4988b7489df8025ad00079f788c32dc8dcdf3499a761e6b173f52d7a3d3,0xd2c34373c5555b8772bc5cc1834cbc0b173462413bb6f24d7d08325d3c2cfcde,0xdfbd597592f039ed151d44f9ec4e1c294ac688e29f261210066d11416a52d296,0xfe578d6b7adc4a6a4a4b59fa712f1c6d394d4672f17c7a26298b57c637de6ce6,0x8a85cd1b09ddfb113d10cdf332f50bbc341cca92ce19de84885b826b7f0d3559,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025238','2026-05-23 14:24:11.465827','2026-05-23 14:24:25.043130',NULL),(290,'BI-6641463',40,36,'BI-6641463',NULL,'2026-05-23 14:24:11.322038','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x6bfdd68ebb44f982fd321d4c5aefcd5cb7779bfbec7277d41e000e2e4e0fcb60,0x655f43bb2d81cf6bb0c7a9bfabc498ea4759720aff40130af6e54773c9255bbe,0xf2bc5ec18ebf72e95d0ae3f840ac86b2e7114a36432dc90b9db914d0af42d4b5,0xf8144182aab417a36b3b44f1fc955ea0bc08c501ce0531006a42c0aea8889578,0x928a9f2297448056e63947607fe32b67f430c4e4c67c4d3ce2f26fcc4d3c51b8,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025268','2026-05-23 14:24:11.467719','2026-05-23 14:24:25.043176',NULL),(291,'BI-7214441',40,36,'BI-7214441',NULL,'2026-05-23 14:24:11.323304','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x578535c0b0b00c169eb2a257d080e50ebfd00bd1b9883c6ae8db72439268ac35,0x0921426ea25b0e4d5b34ec8ebba8134f84da7d629f16ca7ee38534ab2e96b75d,0x7926cfed673ab62209bb38612a3d9a0eb1a821a14ea8494ed736109d8bc30d0d,0xd3389e7c93963b2df6b24222e34332e5d4c4596f7337a6617605ad1e7290e624,0x9b69ce0684c77eeec95e4d9676f3695353f6e8b55741c2881965fc884c868658,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025302','2026-05-23 14:24:11.468713','2026-05-23 14:24:25.043213',NULL),(292,'BI-9036191',40,36,'BI-9036191',NULL,'2026-05-23 14:24:11.324376','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x26d9ac8a0e1610b871adfdd86c09cc83fadac3b3bb69461d6c4f84013cea0b8c,0xf1355c7e62659c0a942c92a5000d9998bb6f240c7834624f3fd900a67675f634,0xdfbd597592f039ed151d44f9ec4e1c294ac688e29f261210066d11416a52d296,0xfe578d6b7adc4a6a4a4b59fa712f1c6d394d4672f17c7a26298b57c637de6ce6,0x8a85cd1b09ddfb113d10cdf332f50bbc341cca92ce19de84885b826b7f0d3559,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025331','2026-05-23 14:24:11.469485','2026-05-23 14:24:25.043259',NULL),(293,'BI-6109204',40,36,'BI-6109204',NULL,'2026-05-23 14:24:11.325329','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xce16090b3036e1596197065372857cbb4d2667cdf2ed25e81150e18d4baacb98,0x82e37c938e1d47f1772956ed68d6f06b2340b636e1498f56b1696c74e59bae4f,0x7601c963ddfb66b694961dfbeebe41d32d41e9d580d317f7afe3191878f60ba0,0xcb481330103ebde8182c38e38b29a16258e87ff8fc71b6ba7e9d55f797e330c5,0xa09c804aff49b8f756c02a32d86666d7f113fb1624398244ce4e523069f38fbf,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025368','2026-05-23 14:24:11.470242','2026-05-23 14:24:25.043298',NULL),(294,'BI-1527810',40,36,'BI-1527810',NULL,'2026-05-23 14:24:11.326341','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x92707164b6aeaa0238f611e0b255f4929e607473a9ef5dc22675bbe9dd8f53ae,0x33d147f99c48c11361fbeb9944a72895a398be3fb5edb274bb4098bbcaa1f585,0x9af791ae8cb6789f3e7b0495dbbf4db4c45644bad62c68f4344bf6d441cd509f,0xd9eea959fffda2838308aea5d37048e36473058b14f68dd5ba2cb64127f1692e,0x74ef0fa15e3624acd36a034fa1a5a2bf243f3e770094842a3abb517bf5c498ad,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025459','2026-05-23 14:24:11.470971','2026-05-23 14:24:25.043346',NULL),(295,'BI-8061336',40,36,'BI-8061336',NULL,'2026-05-23 14:24:11.327290','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xd40c636a82df9e2d9fb49c8d5eb2493427331235ece15d93fc6abc76a7700671,0xd75823e8763ecae74bb92f8bd66054d1046376621de5c951c31d079fcbdc2361,0xbcf0f541ed45d631685365f8b0cda3b9479dfb4e25a418b23abbba145969b441,0x22eaa0a9df5d612fd9dfcd57a4b5a1e902d42ea7d33552d31c62d1acfa930ec4,0x4de8d99f9db9bf36f8defcee454a45aca6d7bb89b5ae263344063cf683de0545,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025508','2026-05-23 14:24:11.471851','2026-05-23 14:24:25.043383',NULL),(296,'BI-3307907',40,36,'BI-3307907',NULL,'2026-05-23 14:24:11.328109','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xcfdb9ea0c7eb3f6600088c8673b1a70eceb85b8f6c329e2c9ace26fea1fe8cca,0xf67b9680f655c98f29eaabfbe150e586287d3e09ae88b25e846765f036518c63,0x7546be7919d8b14ad9aa1912e9db4c6a5959c3cc006360630d7428aa015f5f9d,0xcb481330103ebde8182c38e38b29a16258e87ff8fc71b6ba7e9d55f797e330c5,0xa09c804aff49b8f756c02a32d86666d7f113fb1624398244ce4e523069f38fbf,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025595','2026-05-23 14:24:11.472565','2026-05-23 14:24:25.043419',NULL),(297,'BI-2186204',40,36,'BI-2186204',NULL,'2026-05-23 14:24:11.329241','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x13bf397a109e9bed5e576e8790e4ebf3fe11e9e4606bbcfb767c6b983b0ef8b3,0x9db60492655a374fd5f7a0b8f96797ecbe525f85a3086ed2216f9cf8a31b8ca1,0xf173f1727fcbea11aa46179d4f2c66c55e7d733941a4239463b24861207f2d9f,0x36d265e038a14b17be7cfc06cdd18d183486d53d149bab73fd9bc46f1878c244,0x8a85cd1b09ddfb113d10cdf332f50bbc341cca92ce19de84885b826b7f0d3559,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025651','2026-05-23 14:24:11.473340','2026-05-23 14:24:25.043455',NULL),(298,'BI-7143499',40,36,'BI-7143499',NULL,'2026-05-23 14:24:11.330206','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xcebdf27fea7782a04c5768be1e0872423f44f82b45b5d5b5a1b9013297095e78,0xf67b9680f655c98f29eaabfbe150e586287d3e09ae88b25e846765f036518c63,0x7546be7919d8b14ad9aa1912e9db4c6a5959c3cc006360630d7428aa015f5f9d,0xcb481330103ebde8182c38e38b29a16258e87ff8fc71b6ba7e9d55f797e330c5,0xa09c804aff49b8f756c02a32d86666d7f113fb1624398244ce4e523069f38fbf,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025690','2026-05-23 14:24:11.474095','2026-05-23 14:24:25.043490',NULL),(299,'BI-8322543',40,36,'BI-8322543',NULL,'2026-05-23 14:24:11.331417','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xd134d4dab8c94f25e78f28030872720c9a8d0ca67c31aa507829f22bbd0378dc,0xbda435e40fed9bb481535288e9f7985f3e15581272a219303da54b5fd99ab2b5,0x7546be7919d8b14ad9aa1912e9db4c6a5959c3cc006360630d7428aa015f5f9d,0xcb481330103ebde8182c38e38b29a16258e87ff8fc71b6ba7e9d55f797e330c5,0xa09c804aff49b8f756c02a32d86666d7f113fb1624398244ce4e523069f38fbf,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025726','2026-05-23 14:24:11.474921','2026-05-23 14:24:25.043526',NULL),(300,'BI-4935060',40,36,'BI-4935060',NULL,'2026-05-23 14:24:11.332420','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xa17996efaa2773942b0371b526f1c88d3a4669cafe7d872afb7522d87dc7a32a,0x8b2d54d02b067caa1772f29400ffd13c0c7b63340da6835e6a6e8f9ab90f8894,0xf1f09d31df4f43dc6fd9cfa02c7b5a5af8d174f4ac2530d6278d6f273ce9e5b3,0x745d65a2ee1c615e7f8ce1a76925a88abee35345a941a9ebe9840053c256604f,0x74ef0fa15e3624acd36a034fa1a5a2bf243f3e770094842a3abb517bf5c498ad,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025764','2026-05-23 14:24:11.475812','2026-05-23 14:24:25.043562',NULL),(301,'BI-4442527',40,36,'BI-4442527',NULL,'2026-05-23 14:24:11.334813','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x71d0ee0826f95d2f68c78d4bf1e7d60c98bc09b6d51a1ef9fc9a70fd00407ccb,0xa107855f5d321aa421b655ca8f68c4b78707b1af6e56ac29a7818b5eef731974,0x64cebdcb7ea7ad9ebec3b82e6d30ad9b54ba60fee37f7944315d5e3d91fc47ae,0x3545d1e0fda9cb0693743402ecd6fdcb477926648a61bbf740c8c6b3221275f4,0x928a9f2297448056e63947607fe32b67f430c4e4c67c4d3ce2f26fcc4d3c51b8,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025796','2026-05-23 14:24:11.476657','2026-05-23 14:24:25.043598',NULL),(302,'BI-5916341',40,36,'BI-5916341',NULL,'2026-05-23 14:24:11.336739','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x51346d0b06b7fcc6dbb277905b4caae9f1bddb1f824058e272658e9247d1c777,0xe57f828875e8e03fa8941fcfe77cb8627fc50ded5c0109f41cba09a25faead9e,0xe28ca23df1c7103635f28e2abba6aa2426013b1eebad340cb08715072019bd7b,0xd3389e7c93963b2df6b24222e34332e5d4c4596f7337a6617605ad1e7290e624,0x9b69ce0684c77eeec95e4d9676f3695353f6e8b55741c2881965fc884c868658,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025836','2026-05-23 14:24:11.477468','2026-05-23 14:24:25.043638',NULL),(303,'BI-4125005',40,36,'BI-4125005',NULL,'2026-05-23 14:24:11.337731','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x5c08243c5f1d6fa291eb7b3f2de4acbf29941caac02d13853682f648c22c5acd,0x572b8f2f4ec7234da6aafd8ea4c79182fff598565bac0d1839854cceb0dffbdb,0x7926cfed673ab62209bb38612a3d9a0eb1a821a14ea8494ed736109d8bc30d0d,0xd3389e7c93963b2df6b24222e34332e5d4c4596f7337a6617605ad1e7290e624,0x9b69ce0684c77eeec95e4d9676f3695353f6e8b55741c2881965fc884c868658,0x3040dd93b1e839508d77c043ab7a56c59af7aa0410bcc3cd898b7f6ebfe5a694,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025913','2026-05-23 14:24:11.478259','2026-05-23 14:24:25.043694',NULL),(304,'BI-6441336',40,36,'BI-6441336',NULL,'2026-05-23 14:24:11.338989','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0xcab2b19d2d92d13166f2791ee455fb179de838b8bf9cee7d0e5bce6be95485fd,0x104691c4c3d8d71944ee24f070f23274bd93cad7c8396ea514baa9e911e867c0,0x7601c963ddfb66b694961dfbeebe41d32d41e9d580d317f7afe3191878f60ba0,0xcb481330103ebde8182c38e38b29a16258e87ff8fc71b6ba7e9d55f797e330c5,0xa09c804aff49b8f756c02a32d86666d7f113fb1624398244ce4e523069f38fbf,0x4f0eb2fcc18b3cea0f59bbe7403cfca274757c7aa74f5ec1f429b45c083461d8,0x42abb31b9a39037428d99ae8c51ffcb4f77efa6b4d5efc78fb000d909b7c1bba',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.025956','2026-05-23 14:24:11.479022','2026-05-23 14:24:25.043732',NULL),(305,'BI-2905817',40,36,'BI-2905817',NULL,'2026-05-23 14:24:11.340351','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x8616f69947db5f5a00086405e6ab5ecab300c081cd6250e895d9e01bc0bd9663,0xf92d11eafb450285b3fb8aef4293471181ce4eb97537667ae19b9128c5ac434b,0x3707a6bd75c5c073ff546efa4ba6da2bfa100eed5b9d16857696e5d827e2a5d7,0x3545d1e0fda9cb0693743402ecd6fdcb477926648a61bbf740c8c6b3221275f4,0x928a9f2297448056e63947607fe32b67f430c4e4c67c4d3ce2f26fcc4d3c51b8,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.026011','2026-05-23 14:24:11.479768','2026-05-23 14:24:25.043767',NULL),(306,'BI-6928194',40,36,'BI-6928194',NULL,'2026-05-23 14:24:11.342260','MANUFACTURED',NULL,'MANUFACTURER','2026-05-23 14:24:11.172560','2027-02-20 23:59:59.000000',NULL,'0x950916525f8752923bcacee4a3706f49c75b12c26d77966667f2de4e27d9229b,0x042a87e9462815ce260ac8ddc5d7e8962f8c961195d610955e8a85c5db82e3bc,0x9af791ae8cb6789f3e7b0495dbbf4db4c45644bad62c68f4344bf6d441cd509f,0xd9eea959fffda2838308aea5d37048e36473058b14f68dd5ba2cb64127f1692e,0x74ef0fa15e3624acd36a034fa1a5a2bf243f3e770094842a3abb517bf5c498ad,0xdb5252adc5a4d70bc293154eb138236a874adb4cb8237f660e0a572a7ce9e53c,0x0ed6fa290d806bf7cdfda15d446253d15209ad89b9d4e23ee52819a5f70acdab',_binary '','\n[Blockchain] Registered in TX: 0x2304ee0dba34be18afdffefb8c3288ca3f13f820f9c7b0799d07b4034f28413b at block 2026-05-23T14:24:25.026066','2026-05-23 14:24:11.480634','2026-05-23 14:24:25.043803',NULL);
+/*!40000 ALTER TABLE `product_items` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `provinces`
+--
+
+DROP TABLE IF EXISTS `provinces`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `provinces` (
-  `id` int(11) NOT NULL,
-  `climate` enum('subtropical','temperate','tropical') DEFAULT NULL,
-  `code` varchar(10) DEFAULT NULL,
+  `id` int NOT NULL AUTO_INCREMENT,
+  `climate` enum('subtropical','temperate','tropical') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `code` varchar(10) COLLATE utf8mb4_general_ci DEFAULT NULL,
   `created_at` datetime(6) NOT NULL,
-  `endemic_diseases` text DEFAULT NULL,
-  `name` varchar(100) NOT NULL,
-  `region` enum('central','north','south') DEFAULT NULL
+  `endemic_diseases` text COLLATE utf8mb4_general_ci,
+  `name` varchar(100) COLLATE utf8mb4_general_ci NOT NULL,
+  `region` enum('central','north','south') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UKl256wnwfdobq071mcq7rckr9y` (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc bảng cho bảng `symptoms`
+-- Dumping data for table `provinces`
 --
 
+LOCK TABLES `provinces` WRITE;
+/*!40000 ALTER TABLE `provinces` DISABLE KEYS */;
+/*!40000 ALTER TABLE `provinces` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `raw_material_batches`
+--
+
+DROP TABLE IF EXISTS `raw_material_batches`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `raw_material_batches` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `batch_number` varchar(100) NOT NULL,
+  `coa_document_url` varchar(500) DEFAULT NULL,
+  `created_at` datetime(6) DEFAULT NULL,
+  `expiry_date` date DEFAULT NULL,
+  `manufacture_date` date DEFAULT NULL,
+  `manufacturer_id` bigint DEFAULT NULL,
+  `material_name` varchar(255) NOT NULL,
+  `quality_control_notes` text,
+  `quantity` double NOT NULL,
+  `status` varchar(50) NOT NULL,
+  `supplier_name` varchar(255) NOT NULL,
+  `unit` varchar(50) NOT NULL,
+  `updated_at` datetime(6) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UK2bi9vj5wsj4npq2fwxsl5s0dv` (`batch_number`)
+) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `raw_material_batches`
+--
+
+LOCK TABLES `raw_material_batches` WRITE;
+/*!40000 ALTER TABLE `raw_material_batches` DISABLE KEYS */;
+INSERT INTO `raw_material_batches` VALUES (1,'RAW-20260523-4203',NULL,'2026-05-23 14:05:36.425186','2027-01-20','2024-01-20',NULL,'Bacillus subtilis',NULL,10,'APPROVED','NCC ABC','kg','2026-05-23 14:22:56.071175'),(2,'RAW-20260523-8384',NULL,'2026-05-23 14:22:09.915516','2026-02-20','2025-02-20',NULL,'Pantoprazol',NULL,10,'APPROVED','NCC ABC','kg','2026-05-23 14:22:59.026847');
+/*!40000 ALTER TABLE `raw_material_batches` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `symptoms`
+--
+
+DROP TABLE IF EXISTS `symptoms`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `symptoms` (
-  `id` int(11) NOT NULL,
-  `category` varchar(100) DEFAULT NULL,
-  `common_causes` text DEFAULT NULL,
+  `id` int NOT NULL AUTO_INCREMENT,
+  `category` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `common_causes` text COLLATE utf8mb4_general_ci,
   `created_at` datetime(6) NOT NULL,
-  `measurement_unit` varchar(50) DEFAULT NULL,
-  `name` varchar(200) NOT NULL,
-  `red_flag_indicators` text DEFAULT NULL,
-  `related_body_systems` text DEFAULT NULL,
-  `severity_scale` enum('ABSENT_PRESENT','MILD_SEVERE','ONE_TO_TEN') DEFAULT NULL
+  `measurement_unit` varchar(50) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `name` varchar(200) COLLATE utf8mb4_general_ci NOT NULL,
+  `red_flag_indicators` text COLLATE utf8mb4_general_ci,
+  `related_body_systems` text COLLATE utf8mb4_general_ci,
+  `severity_scale` enum('ABSENT_PRESENT','MILD_SEVERE','ONE_TO_TEN') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
-
---
--- Cấu trúc bảng cho bảng `users`
---
-
-CREATE TABLE `users` (
-  `id` varchar(36) NOT NULL,
-  `email` varchar(255) NOT NULL,
-  `password_hash` varchar(255) NOT NULL,
-  `name` varchar(255) DEFAULT NULL,
-  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
-  `last_login_at` timestamp NULL DEFAULT NULL,
-  `is_profile_complete` tinyint(1) DEFAULT 0,
-  `is_active` tinyint(1) DEFAULT 1,
-  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `users`
+-- Dumping data for table `symptoms`
 --
 
-INSERT INTO `users` (`id`, `email`, `password_hash`, `name`, `created_at`, `last_login_at`, `is_profile_complete`, `is_active`, `updated_at`) VALUES
-('076e2d56-8c6e-40f0-b07f-b997442cb66e', 'lebadaomac@gmail.com', '$2a$10$uX7xbqFgg/cx8AfoDfiSde625P/TZb/jvw0T6Rp0WIpUSha8zD5qq', 'quyen', '2025-09-09 10:05:56', '2026-02-24 16:17:56', 1, 1, '2026-02-24 16:17:56'),
-('c95e23bb-7a92-47af-a2b3-48d5e9d8a3f7', 'quyen@gmail.com', '$2a$10$/nvz1ezBv0JZs8gZE/cU6e/EUvk2qBLlGJQG3IbEdihr9liBVfTgq', 'quyen', '2025-09-09 20:38:33', NULL, 0, 1, '2025-09-09 20:38:33');
-
--- --------------------------------------------------------
+LOCK TABLES `symptoms` WRITE;
+/*!40000 ALTER TABLE `symptoms` DISABLE KEYS */;
+/*!40000 ALTER TABLE `symptoms` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc bảng cho bảng `user_allergies`
+-- Table structure for table `user_allergies`
 --
 
+DROP TABLE IF EXISTS `user_allergies`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `user_allergies` (
-  `id` int(11) NOT NULL,
+  `id` int NOT NULL AUTO_INCREMENT,
   `confirmed_by_test` bit(1) NOT NULL,
   `created_at` datetime(6) NOT NULL,
   `first_reaction_date` date DEFAULT NULL,
   `is_active` bit(1) NOT NULL,
   `last_reaction_date` date DEFAULT NULL,
-  `notes` text DEFAULT NULL,
-  `severity` enum('anaphylaxis','mild','moderate','severe') DEFAULT NULL,
-  `symptoms_experienced` text DEFAULT NULL,
-  `test_type` varchar(100) DEFAULT NULL,
-  `treatment_required` text DEFAULT NULL,
+  `notes` text COLLATE utf8mb4_general_ci,
+  `severity` enum('anaphylaxis','mild','moderate','severe') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `symptoms_experienced` text COLLATE utf8mb4_general_ci,
+  `test_type` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `treatment_required` text COLLATE utf8mb4_general_ci,
   `updated_at` datetime(6) DEFAULT NULL,
-  `allergen_id` int(11) NOT NULL,
-  `user_id` varchar(36) NOT NULL
+  `allergen_id` int NOT NULL,
+  `user_id` varchar(36) COLLATE utf8mb4_general_ci NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UKlpfcepd1quxrwrg1iso3rbtol` (`user_id`,`allergen_id`),
+  KEY `FKe9l0g417v7f5a0x7mlgd8nef6` (`allergen_id`),
+  CONSTRAINT `FK4mclrynvl1em11jh8sxt5s74k` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
+  CONSTRAINT `FKe9l0g417v7f5a0x7mlgd8nef6` FOREIGN KEY (`allergen_id`) REFERENCES `allergen_categories` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc bảng cho bảng `user_analytics`
+-- Dumping data for table `user_allergies`
 --
 
+LOCK TABLES `user_allergies` WRITE;
+/*!40000 ALTER TABLE `user_allergies` DISABLE KEYS */;
+/*!40000 ALTER TABLE `user_allergies` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `user_analytics`
+--
+
+DROP TABLE IF EXISTS `user_analytics`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `user_analytics` (
-  `id` int(11) NOT NULL,
-  `articles_read` int(11) NOT NULL,
+  `id` int NOT NULL AUTO_INCREMENT,
+  `articles_read` int NOT NULL,
   `average_satisfaction` decimal(3,2) DEFAULT NULL,
   `created_at` datetime(6) NOT NULL,
-  `diagnoses_received` int(11) NOT NULL,
-  `features_used` text DEFAULT NULL,
-  `helpful_responses` int(11) NOT NULL,
-  `recommendations_followed` int(11) NOT NULL,
+  `diagnoses_received` int NOT NULL,
+  `features_used` text COLLATE utf8mb4_general_ci,
+  `helpful_responses` int NOT NULL,
+  `recommendations_followed` int NOT NULL,
   `session_date` date NOT NULL,
-  `symptoms_reported` int(11) NOT NULL,
-  `total_responses` int(11) NOT NULL,
-  `total_sessions` int(11) NOT NULL,
-  `total_time_minutes` int(11) NOT NULL,
-  `user_id` varchar(36) NOT NULL
+  `symptoms_reported` int NOT NULL,
+  `total_responses` int NOT NULL,
+  `total_sessions` int NOT NULL,
+  `total_time_minutes` int NOT NULL,
+  `user_id` varchar(36) COLLATE utf8mb4_general_ci NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UK7mdo9lpckgwptue7g6mcadpbt` (`user_id`,`session_date`),
+  CONSTRAINT `FKs410q6f29i1omwuogxe0jf8cp` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc bảng cho bảng `user_blockchain_addresses`
+-- Dumping data for table `user_analytics`
 --
 
+LOCK TABLES `user_analytics` WRITE;
+/*!40000 ALTER TABLE `user_analytics` DISABLE KEYS */;
+/*!40000 ALTER TABLE `user_analytics` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `user_blockchain_addresses`
+--
+
+DROP TABLE IF EXISTS `user_blockchain_addresses`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `user_blockchain_addresses` (
-  `id` bigint(20) NOT NULL,
-  `user_id` varchar(36) NOT NULL,
-  `blockchain_address` varchar(42) NOT NULL,
-  `address_type` enum('MANUFACTURER','DISTRIBUTOR','PHARMACY','CONSUMER') NOT NULL,
-  `is_verified` tinyint(1) NOT NULL DEFAULT 0,
-  `private_key_encrypted` text DEFAULT NULL COMMENT 'Encrypted private key (optional)',
-  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
-  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` varchar(36) COLLATE utf8mb4_general_ci NOT NULL,
+  `blockchain_address` varchar(42) COLLATE utf8mb4_general_ci NOT NULL,
+  `address_type` enum('MANUFACTURER','DISTRIBUTOR','PHARMACY','CONSUMER') COLLATE utf8mb4_general_ci NOT NULL,
+  `is_verified` tinyint(1) NOT NULL DEFAULT '0',
+  `private_key_encrypted` text COLLATE utf8mb4_general_ci COMMENT 'Encrypted private key (optional)',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_user_address_type` (`user_id`,`address_type`),
+  KEY `idx_user_id` (`user_id`),
+  KEY `idx_blockchain_address` (`blockchain_address`),
+  KEY `idx_address_type` (`address_type`),
+  KEY `idx_is_verified` (`is_verified`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc bảng cho bảng `user_chronic_diseases`
+-- Dumping data for table `user_blockchain_addresses`
 --
 
+LOCK TABLES `user_blockchain_addresses` WRITE;
+/*!40000 ALTER TABLE `user_blockchain_addresses` DISABLE KEYS */;
+/*!40000 ALTER TABLE `user_blockchain_addresses` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `user_chronic_diseases`
+--
+
+DROP TABLE IF EXISTS `user_chronic_diseases`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `user_chronic_diseases` (
-  `id` int(11) NOT NULL,
+  `id` int NOT NULL AUTO_INCREMENT,
   `created_at` datetime(6) NOT NULL,
-  `current_status` enum('active','cured','managed','remission') DEFAULT NULL,
-  `diagnosed_by` varchar(200) DEFAULT NULL,
+  `current_status` enum('active','cured','managed','remission') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `diagnosed_by` varchar(200) COLLATE utf8mb4_general_ci DEFAULT NULL,
   `diagnosed_date` date DEFAULT NULL,
-  `notes` text DEFAULT NULL,
-  `severity_current` enum('mild','moderate','severe') DEFAULT NULL,
+  `notes` text COLLATE utf8mb4_general_ci,
+  `severity_current` enum('mild','moderate','severe') COLLATE utf8mb4_general_ci DEFAULT NULL,
   `updated_at` datetime(6) DEFAULT NULL,
-  `disease_id` int(11) NOT NULL,
-  `user_id` varchar(36) NOT NULL
+  `disease_id` int NOT NULL,
+  `user_id` varchar(36) COLLATE utf8mb4_general_ci NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UK8sygvsr1aj77insmjtoxe1slp` (`user_id`,`disease_id`),
+  KEY `FK8vrsx37q69dypyauw2ofhdglk` (`disease_id`),
+  CONSTRAINT `FK7bbk7fm509ihkwc721bigrhc2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
+  CONSTRAINT `FK8vrsx37q69dypyauw2ofhdglk` FOREIGN KEY (`disease_id`) REFERENCES `disease_categories` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc bảng cho bảng `user_demographics`
+-- Dumping data for table `user_chronic_diseases`
 --
 
+LOCK TABLES `user_chronic_diseases` WRITE;
+/*!40000 ALTER TABLE `user_chronic_diseases` DISABLE KEYS */;
+/*!40000 ALTER TABLE `user_chronic_diseases` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `user_demographics`
+--
+
+DROP TABLE IF EXISTS `user_demographics`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `user_demographics` (
-  `id` int(11) NOT NULL,
-  `birth_month` int(11) DEFAULT NULL,
-  `birth_year` int(11) NOT NULL,
-  `blood_type` enum('AB_NEGATIVE','AB_POSITIVE','A_NEGATIVE','A_POSITIVE','B_NEGATIVE','B_POSITIVE','O_NEGATIVE','O_POSITIVE','unknown') DEFAULT NULL,
+  `id` int NOT NULL AUTO_INCREMENT,
+  `birth_month` int DEFAULT NULL,
+  `birth_year` int NOT NULL,
+  `blood_type` enum('AB_NEGATIVE','AB_POSITIVE','A_NEGATIVE','A_POSITIVE','B_NEGATIVE','B_POSITIVE','O_NEGATIVE','O_POSITIVE','unknown') COLLATE utf8mb4_general_ci DEFAULT NULL,
   `created_at` datetime(6) NOT NULL,
-  `education_level` enum('bachelor','high_school','master','other','phd','primary','secondary') DEFAULT NULL,
-  `gender` enum('female','male','other') NOT NULL,
-  `height_cm` int(11) DEFAULT NULL,
-  `occupation` varchar(100) DEFAULT NULL,
+  `education_level` enum('bachelor','high_school','master','other','phd','primary','secondary') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `gender` enum('female','male','other') COLLATE utf8mb4_general_ci NOT NULL,
+  `height_cm` int DEFAULT NULL,
+  `occupation` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
   `updated_at` datetime(6) DEFAULT NULL,
   `weight_kg` decimal(5,2) DEFAULT NULL,
-  `province_id` int(11) DEFAULT NULL,
-  `user_id` varchar(36) NOT NULL
+  `province_id` int DEFAULT NULL,
+  `user_id` varchar(36) COLLATE utf8mb4_general_ci NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UKf6vynx60dpd6wgq0vqsbjw73s` (`user_id`),
+  KEY `FKgtdim7lin9k4ksae3rlai3423` (`province_id`),
+  CONSTRAINT `FK6oi5c2vx6uwx787h2dh42tds0` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
+  CONSTRAINT `FKgtdim7lin9k4ksae3rlai3423` FOREIGN KEY (`province_id`) REFERENCES `provinces` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc bảng cho bảng `user_family_history`
+-- Dumping data for table `user_demographics`
 --
 
+LOCK TABLES `user_demographics` WRITE;
+/*!40000 ALTER TABLE `user_demographics` DISABLE KEYS */;
+/*!40000 ALTER TABLE `user_demographics` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `user_family_history`
+--
+
+DROP TABLE IF EXISTS `user_family_history`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `user_family_history` (
-  `id` int(11) NOT NULL,
-  `age_of_onset` int(11) DEFAULT NULL,
+  `id` int NOT NULL AUTO_INCREMENT,
+  `age_of_onset` int DEFAULT NULL,
   `created_at` datetime(6) NOT NULL,
   `is_deceased` bit(1) NOT NULL,
-  `notes` text DEFAULT NULL,
-  `relationship` enum('aunt_uncle','cousin','father','grandparent','mother','other','sibling') DEFAULT NULL,
-  `cause_of_death` int(11) DEFAULT NULL,
-  `disease_id` int(11) NOT NULL,
-  `user_id` varchar(36) NOT NULL
+  `notes` text COLLATE utf8mb4_general_ci,
+  `relationship` enum('aunt_uncle','cousin','father','grandparent','mother','other','sibling') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `cause_of_death` int DEFAULT NULL,
+  `disease_id` int NOT NULL,
+  `user_id` varchar(36) COLLATE utf8mb4_general_ci NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `FK5j07xbkwg6ar194tpu0pnjc1u` (`cause_of_death`),
+  KEY `FK5kfo8kst0cfl6bn3jnqnkaya3` (`disease_id`),
+  KEY `FKo72n0klmcu5t03ubdrqg1erlg` (`user_id`),
+  CONSTRAINT `FK5j07xbkwg6ar194tpu0pnjc1u` FOREIGN KEY (`cause_of_death`) REFERENCES `disease_categories` (`id`),
+  CONSTRAINT `FK5kfo8kst0cfl6bn3jnqnkaya3` FOREIGN KEY (`disease_id`) REFERENCES `disease_categories` (`id`),
+  CONSTRAINT `FKo72n0klmcu5t03ubdrqg1erlg` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc bảng cho bảng `user_lifestyle`
+-- Dumping data for table `user_family_history`
 --
 
+LOCK TABLES `user_family_history` WRITE;
+/*!40000 ALTER TABLE `user_family_history` DISABLE KEYS */;
+/*!40000 ALTER TABLE `user_family_history` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `user_lifestyle`
+--
+
+DROP TABLE IF EXISTS `user_lifestyle`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `user_lifestyle` (
-  `id` int(11) NOT NULL,
-  `alcohol_frequency` enum('daily','never','rarely','weekly') DEFAULT NULL,
-  `alcohol_type_preference` text DEFAULT NULL,
+  `id` int NOT NULL AUTO_INCREMENT,
+  `alcohol_frequency` enum('daily','never','rarely','weekly') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `alcohol_type_preference` text COLLATE utf8mb4_general_ci,
   `alcohol_units_per_week` decimal(4,1) DEFAULT NULL,
   `chemical_exposure` bit(1) NOT NULL,
-  `cigarettes_per_day` int(11) DEFAULT NULL,
+  `cigarettes_per_day` int DEFAULT NULL,
   `created_at` datetime(6) NOT NULL,
-  `diet_type` enum('keto','omnivore','other','paleo','vegan','vegetarian') DEFAULT NULL,
-  `exercise_duration_minutes` int(11) DEFAULT NULL,
-  `exercise_frequency` enum('daily','none','rare','weekly') DEFAULT NULL,
-  `exercise_intensity` enum('light','moderate','vigorous') DEFAULT NULL,
-  `exercise_types` text DEFAULT NULL,
-  `meals_per_day` int(11) DEFAULT NULL,
-  `mental_health_status` enum('excellent','fair','good','poor') DEFAULT NULL,
-  `physical_demands` enum('heavy','light','moderate','sedentary') DEFAULT NULL,
-  `sleep_disorders` text DEFAULT NULL,
+  `diet_type` enum('keto','omnivore','other','paleo','vegan','vegetarian') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `exercise_duration_minutes` int DEFAULT NULL,
+  `exercise_frequency` enum('daily','none','rare','weekly') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `exercise_intensity` enum('light','moderate','vigorous') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `exercise_types` text COLLATE utf8mb4_general_ci,
+  `meals_per_day` int DEFAULT NULL,
+  `mental_health_status` enum('excellent','fair','good','poor') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `physical_demands` enum('heavy','light','moderate','sedentary') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `sleep_disorders` text COLLATE utf8mb4_general_ci,
   `sleep_hours_average` decimal(3,1) DEFAULT NULL,
-  `sleep_quality` enum('excellent','fair','good','poor') DEFAULT NULL,
-  `smoking_quit_age` int(11) DEFAULT NULL,
-  `smoking_start_age` int(11) DEFAULT NULL,
-  `smoking_status` enum('current','former','never') NOT NULL,
-  `stress_level` enum('high','low','moderate','severe') DEFAULT NULL,
+  `sleep_quality` enum('excellent','fair','good','poor') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `smoking_quit_age` int DEFAULT NULL,
+  `smoking_start_age` int DEFAULT NULL,
+  `smoking_status` enum('current','former','never') COLLATE utf8mb4_general_ci NOT NULL,
+  `stress_level` enum('high','low','moderate','severe') COLLATE utf8mb4_general_ci DEFAULT NULL,
   `updated_at` datetime(6) DEFAULT NULL,
   `water_intake_liters` decimal(3,1) DEFAULT NULL,
-  `work_environment` enum('industrial','medical','office','other','outdoor') DEFAULT NULL,
-  `years_smoked` int(11) DEFAULT NULL,
-  `user_id` varchar(36) NOT NULL
+  `work_environment` enum('industrial','medical','office','other','outdoor') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `years_smoked` int DEFAULT NULL,
+  `user_id` varchar(36) COLLATE utf8mb4_general_ci NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `UKyep64m0od2ba5hj03pp6hao4` (`user_id`),
+  CONSTRAINT `FK1oq3d9ckvuvqhvcwqat4yt96q` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
-
---
--- Cấu trúc bảng cho bảng `user_medications`
---
-
-CREATE TABLE `user_medications` (
-  `id` int(11) NOT NULL,
-  `adherence_level` enum('excellent','fair','good','poor') DEFAULT NULL,
-  `created_at` datetime(6) NOT NULL,
-  `dosage` varchar(50) DEFAULT NULL,
-  `end_date` date DEFAULT NULL,
-  `frequency` varchar(50) DEFAULT NULL,
-  `indication` varchar(200) DEFAULT NULL,
-  `is_active` bit(1) NOT NULL,
-  `notes` text DEFAULT NULL,
-  `prescribed_by` varchar(200) DEFAULT NULL,
-  `route` enum('inhaled','injection','oral','other','topical') DEFAULT NULL,
-  `start_date` date DEFAULT NULL,
-  `updated_at` datetime(6) DEFAULT NULL,
-  `medication_id` int(11) NOT NULL,
-  `user_id` varchar(36) NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc bảng cho bảng `user_medication_records`
+-- Dumping data for table `user_lifestyle`
 --
 
+LOCK TABLES `user_lifestyle` WRITE;
+/*!40000 ALTER TABLE `user_lifestyle` DISABLE KEYS */;
+/*!40000 ALTER TABLE `user_lifestyle` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `user_medication_records`
+--
+
+DROP TABLE IF EXISTS `user_medication_records`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `user_medication_records` (
-  `id` bigint(20) NOT NULL,
+  `id` bigint NOT NULL AUTO_INCREMENT,
   `adherence_rate` double DEFAULT NULL,
-  `batch_number` varchar(50) DEFAULT NULL,
+  `batch_number` varchar(50) COLLATE utf8mb4_general_ci DEFAULT NULL,
   `created_at` datetime(6) NOT NULL,
-  `dispense_instruction_id` bigint(20) DEFAULT NULL,
-  `dosage` varchar(50) DEFAULT NULL,
-  `drug_name` varchar(255) NOT NULL,
+  `dispense_instruction_id` bigint DEFAULT NULL,
+  `dosage` varchar(50) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `drug_name` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
   `end_date` date DEFAULT NULL,
   `expiry_date` date DEFAULT NULL,
-  `frequency` int(11) DEFAULT NULL,
+  `frequency` int DEFAULT NULL,
   `is_active` bit(1) DEFAULT NULL,
   `is_completed` bit(1) DEFAULT NULL,
   `is_paused` bit(1) DEFAULT NULL,
-  `item_code` varchar(100) DEFAULT NULL,
-  `manufacturer` varchar(255) DEFAULT NULL,
-  `meal_relation` enum('AFTER','ANY','BEFORE','WITH') DEFAULT NULL,
-  `missed_doses` int(11) DEFAULT NULL,
-  `notes` text DEFAULT NULL,
-  `pause_reason` varchar(255) DEFAULT NULL,
-  `pharmacy_id` bigint(20) DEFAULT NULL,
-  `pharmacy_name` varchar(100) DEFAULT NULL,
-  `product_item_id` bigint(20) DEFAULT NULL,
+  `item_code` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `manufacturer` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `meal_relation` enum('AFTER','ANY','BEFORE','WITH') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `missed_doses` int DEFAULT NULL,
+  `notes` text COLLATE utf8mb4_general_ci,
+  `pause_reason` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `pharmacy_id` bigint DEFAULT NULL,
+  `pharmacy_name` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `product_item_id` bigint DEFAULT NULL,
   `purchased_at` datetime(6) DEFAULT NULL,
-  `reminder_times` varchar(100) DEFAULT NULL,
-  `special_instructions` text DEFAULT NULL,
+  `reminder_times` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `special_instructions` text COLLATE utf8mb4_general_ci,
   `start_date` date NOT NULL,
-  `taken_doses` int(11) DEFAULT NULL,
-  `total_doses` int(11) DEFAULT NULL,
+  `taken_doses` int DEFAULT NULL,
+  `total_doses` int DEFAULT NULL,
   `updated_at` datetime(6) DEFAULT NULL,
-  `user_id` bigint(20) NOT NULL
+  `user_id` bigint NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `FKpb1evaoa70h08n62li4tp41xd` (`dispense_instruction_id`),
+  KEY `FKtn6ygqbsgvy4aan6vhdcor2nu` (`user_id`),
+  KEY `FKf7v60s8xthtuqxw9nnud4wfnf` (`product_item_id`),
+  CONSTRAINT `FKf7v60s8xthtuqxw9nnud4wfnf` FOREIGN KEY (`product_item_id`) REFERENCES `product_items` (`id`),
+  CONSTRAINT `FKpb1evaoa70h08n62li4tp41xd` FOREIGN KEY (`dispense_instruction_id`) REFERENCES `dispense_instructions` (`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=30 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `user_medication_records`
+--
+
+LOCK TABLES `user_medication_records` WRITE;
+/*!40000 ALTER TABLE `user_medication_records` DISABLE KEYS */;
+INSERT INTO `user_medication_records` VALUES (28,NULL,NULL,'2026-02-27 15:07:24.000000',NULL,'500mg','Azithromycin 500mg','2026-03-06','2028-02-26',3,_binary '',_binary '\0',_binary '\0',NULL,NULL,'AFTER',0,NULL,NULL,NULL,NULL,NULL,NULL,'08:00,15:37,20:00',NULL,'2026-02-27',0,23,'2026-02-27 15:36:25.000000',155468011),(29,NULL,NULL,'2026-03-25 14:52:32.000000',NULL,'1 viên','Azithromycin 500mg','2026-03-28','2028-02-26',2,_binary '',_binary '\0',_binary '\0',NULL,NULL,'AFTER',0,NULL,NULL,NULL,NULL,NULL,NULL,'12:00,19:00',NULL,'2026-03-25',0,8,'2026-03-25 14:52:32.000000',155468011);
+/*!40000 ALTER TABLE `user_medication_records` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `user_medications`
+--
+
+DROP TABLE IF EXISTS `user_medications`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `user_medications` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `adherence_level` enum('excellent','fair','good','poor') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL,
+  `dosage` varchar(50) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `end_date` date DEFAULT NULL,
+  `frequency` varchar(50) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `indication` varchar(200) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `is_active` bit(1) NOT NULL,
+  `notes` text COLLATE utf8mb4_general_ci,
+  `prescribed_by` varchar(200) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `route` enum('inhaled','injection','oral','other','topical') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `start_date` date DEFAULT NULL,
+  `updated_at` datetime(6) DEFAULT NULL,
+  `medication_id` int NOT NULL,
+  `user_id` varchar(36) COLLATE utf8mb4_general_ci NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `FKqdnk12od7cjg3denr5poygql8` (`medication_id`),
+  KEY `FK19lmjhtt7n8cqs1csr37kxe3t` (`user_id`),
+  CONSTRAINT `FK19lmjhtt7n8cqs1csr37kxe3t` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
+  CONSTRAINT `FKqdnk12od7cjg3denr5poygql8` FOREIGN KEY (`medication_id`) REFERENCES `medications` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Đang đổ dữ liệu cho bảng `user_medication_records`
+-- Dumping data for table `user_medications`
 --
 
-INSERT INTO `user_medication_records` (`id`, `adherence_rate`, `batch_number`, `created_at`, `dispense_instruction_id`, `dosage`, `drug_name`, `end_date`, `expiry_date`, `frequency`, `is_active`, `is_completed`, `is_paused`, `item_code`, `manufacturer`, `meal_relation`, `missed_doses`, `notes`, `pause_reason`, `pharmacy_id`, `pharmacy_name`, `product_item_id`, `purchased_at`, `reminder_times`, `special_instructions`, `start_date`, `taken_doses`, `total_doses`, `updated_at`, `user_id`) VALUES
-(28, NULL, NULL, '2026-02-27 15:07:24.000000', NULL, '500mg', 'Azithromycin 500mg', '2026-03-06', '2028-02-26', 3, b'1', b'0', b'0', NULL, NULL, 'AFTER', 0, NULL, NULL, NULL, NULL, NULL, NULL, '08:00,15:37,20:00', NULL, '2026-02-27', 0, 23, '2026-02-27 15:36:25.000000', 155468011),
-(29, NULL, NULL, '2026-03-25 14:52:32.000000', NULL, '1 viên', 'Azithromycin 500mg', '2026-03-28', '2028-02-26', 2, b'1', b'0', b'0', NULL, NULL, 'AFTER', 0, NULL, NULL, NULL, NULL, NULL, NULL, '12:00,19:00', NULL, '2026-03-25', 0, 8, '2026-03-25 14:52:32.000000', 155468011);
-
--- --------------------------------------------------------
+LOCK TABLES `user_medications` WRITE;
+/*!40000 ALTER TABLE `user_medications` DISABLE KEYS */;
+/*!40000 ALTER TABLE `user_medications` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc bảng cho bảng `user_news_interactions`
+-- Table structure for table `user_news_interactions`
 --
 
+DROP TABLE IF EXISTS `user_news_interactions`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `user_news_interactions` (
-  `id` int(11) NOT NULL,
+  `id` int NOT NULL AUTO_INCREMENT,
   `interaction_timestamp` datetime(6) NOT NULL,
-  `interaction_type` enum('bookmark','like','report','share','view') DEFAULT NULL,
-  `reading_time_seconds` int(11) DEFAULT NULL,
-  `article_id` int(11) NOT NULL,
-  `user_id` varchar(36) NOT NULL
+  `interaction_type` enum('bookmark','like','report','share','view') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `reading_time_seconds` int DEFAULT NULL,
+  `article_id` int NOT NULL,
+  `user_id` varchar(36) COLLATE utf8mb4_general_ci NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `FKnwx3trc1fnawwofdugamsshbl` (`article_id`),
+  KEY `FKnnnrc539o3ogkp37dg6b4acs8` (`user_id`),
+  CONSTRAINT `FKnnnrc539o3ogkp37dg6b4acs8` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
+  CONSTRAINT `FKnwx3trc1fnawwofdugamsshbl` FOREIGN KEY (`article_id`) REFERENCES `news_articles` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc bảng cho bảng `user_symptom_reports`
+-- Dumping data for table `user_news_interactions`
 --
 
+LOCK TABLES `user_news_interactions` WRITE;
+/*!40000 ALTER TABLE `user_news_interactions` DISABLE KEYS */;
+/*!40000 ALTER TABLE `user_news_interactions` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `user_symptom_reports`
+--
+
+DROP TABLE IF EXISTS `user_symptom_reports`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `user_symptom_reports` (
-  `id` int(11) NOT NULL,
-  `associated_symptoms` text DEFAULT NULL,
-  `duration_hours` int(11) DEFAULT NULL,
-  `frequency` enum('constant','intermittent','occasional') DEFAULT NULL,
-  `location_body_part` varchar(100) DEFAULT NULL,
-  `onset_type` enum('gradual','sudden') DEFAULT NULL,
-  `quality_description` text DEFAULT NULL,
+  `id` int NOT NULL AUTO_INCREMENT,
+  `associated_symptoms` text COLLATE utf8mb4_general_ci,
+  `duration_hours` int DEFAULT NULL,
+  `frequency` enum('constant','intermittent','occasional') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `location_body_part` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `onset_type` enum('gradual','sudden') COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `quality_description` text COLLATE utf8mb4_general_ci,
   `reported_at` datetime(6) NOT NULL,
-  `session_id` varchar(36) DEFAULT NULL,
-  `severity` int(11) DEFAULT NULL,
-  `triggers` text DEFAULT NULL,
-  `symptom_id` int(11) NOT NULL,
-  `user_id` varchar(36) NOT NULL
+  `session_id` varchar(36) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `severity` int DEFAULT NULL,
+  `triggers` text COLLATE utf8mb4_general_ci,
+  `symptom_id` int NOT NULL,
+  `user_id` varchar(36) COLLATE utf8mb4_general_ci NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `FKc1ofdoqfa5gfjr24gv7u13csj` (`symptom_id`),
+  KEY `FKljga2nkpr5nevb46jgm5v6620` (`user_id`),
+  CONSTRAINT `FKc1ofdoqfa5gfjr24gv7u13csj` FOREIGN KEY (`symptom_id`) REFERENCES `symptoms` (`id`),
+  CONSTRAINT `FKljga2nkpr5nevb46jgm5v6620` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- --------------------------------------------------------
-
---
--- Cấu trúc đóng vai cho view `v_batch_status`
--- (See below for the actual view)
---
-CREATE TABLE `v_batch_status` (
-`batch_id` decimal(38,0)
-,`drug_name` varchar(255)
-,`batch_number` varchar(100)
-,`manufacturer` varchar(255)
-,`quantity` bigint(20)
-,`status` enum('DELIVERED','IN_TRANSIT','MANUFACTURED','SOLD')
-,`expiry_date` datetime(6)
-,`validity_status` varchar(13)
-,`current_owner_name` varchar(255)
-);
-
--- --------------------------------------------------------
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc đóng vai cho view `v_blockchain_overview`
--- (See below for the actual view)
+-- Dumping data for table `user_symptom_reports`
 --
-CREATE TABLE `v_blockchain_overview` (
-`transaction_hash` varchar(66)
-,`function_name` varchar(100)
-,`from_address` varchar(42)
-,`to_address` varchar(42)
-,`status` enum('FAILED','PENDING','REVERTED','SUCCESS')
-,`gas_used` decimal(38,0)
-,`timestamp` datetime(6)
-,`batch_drug_name` varchar(255)
-,`shipment_code` varchar(100)
-);
 
--- --------------------------------------------------------
+LOCK TABLES `user_symptom_reports` WRITE;
+/*!40000 ALTER TABLE `user_symptom_reports` DISABLE KEYS */;
+/*!40000 ALTER TABLE `user_symptom_reports` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc đóng vai cho view `v_company_users`
--- (See below for the actual view)
+-- Table structure for table `users`
 --
-CREATE TABLE `v_company_users` (
-`company_id` bigint(20)
-,`company_name` varchar(255)
-,`company_type` enum('MANUFACTURER','DISTRIBUTOR','PHARMACY')
-,`wallet_address` varchar(42)
-,`license_number` varchar(255)
-,`user_email` varchar(255)
-,`user_name` varchar(255)
-,`user_type` varchar(12)
-);
 
--- --------------------------------------------------------
-
---
--- Cấu trúc đóng vai cho view `v_distributor_inventory_full`
--- (See below for the actual view)
---
-CREATE TABLE `v_distributor_inventory_full` (
-`id` bigint(20)
-,`distributor_id` bigint(20)
-,`batch_id` bigint(20)
-,`drug_name` varchar(255)
-,`manufacturer` varchar(255)
-,`batch_number` varchar(100)
-,`quantity` int(11)
-,`reserved_quantity` int(11)
-,`available_quantity` int(11)
-,`manufacture_date` timestamp
-,`expiry_date` timestamp
-,`qr_code` varchar(1000)
-,`warehouse_location` varchar(100)
-,`storage_conditions` varchar(500)
-,`storage_temperature` varchar(50)
-,`unit_price` decimal(15,2)
-,`selling_price` decimal(15,2)
-,`total_value` decimal(15,2)
-,`status` enum('GOOD','LOW_STOCK','EXPIRING_SOON','EXPIRED','QUARANTINE')
-,`min_stock_level` int(11)
-,`max_stock_level` int(11)
-,`blockchain_batch_id` decimal(38,0)
-,`receive_tx_hash` varchar(66)
-,`current_owner_address` varchar(42)
-,`received_from_company_id` bigint(20)
-,`received_shipment_id` bigint(20)
-,`received_date` timestamp
-,`received_quantity` int(11)
-,`created_at` timestamp
-,`updated_at` timestamp
-,`created_by` varchar(36)
-,`updated_by` varchar(36)
-,`notes` text
-,`distributor_name` varchar(255)
-,`distributor_wallet` varchar(42)
-,`batch_status` enum('DELIVERED','IN_TRANSIT','MANUFACTURED','SOLD')
-,`manufacturer_address` varchar(42)
-,`days_to_expiry` int(7)
-,`alert_status` varchar(13)
-);
-
--- --------------------------------------------------------
+DROP TABLE IF EXISTS `users`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `users` (
+  `id` varchar(36) COLLATE utf8mb4_general_ci NOT NULL,
+  `email` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `password_hash` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `name` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `last_login_at` timestamp NULL DEFAULT NULL,
+  `is_profile_complete` tinyint(1) DEFAULT '0',
+  `is_active` tinyint(1) DEFAULT '1',
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `email` (`email`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Cấu trúc đóng vai cho view `v_item_movement_summary`
--- (See below for the actual view)
+-- Dumping data for table `users`
 --
-CREATE TABLE `v_item_movement_summary` (
-`item_id` bigint(20)
-,`item_code` varchar(100)
-,`current_status` enum('MANUFACTURED','IN_WAREHOUSE','IN_TRANSIT','DELIVERED','SOLD','EXPIRED','RECALLED','DAMAGED')
-,`total_movements` bigint(21)
-,`first_movement` datetime(6)
-,`last_movement` datetime(6)
-,`ship_count` decimal(22,0)
-,`receive_count` decimal(22,0)
-,`sale_count` decimal(22,0)
-,`blockchain_synced_count` decimal(22,0)
-);
 
--- --------------------------------------------------------
+LOCK TABLES `users` WRITE;
+/*!40000 ALTER TABLE `users` DISABLE KEYS */;
+INSERT INTO `users` VALUES ('076e2d56-8c6e-40f0-b07f-b997442cb66e','lebadaomac@gmail.com','a.HweyWMBVmyEpahToXZOCWHje1X5nY9u','quyen','2025-09-09 10:05:56','2026-02-24 16:17:56',1,1,'2026-05-23 07:41:40'),('a7cf6fc1-08a9-45c3-b8df-82a4d0b8f90f','example1@gmail.com','$2a$10$NkmahDArJ8hSmY343e.IU.713FdWsKTSZ/HfWkTVxiEoi5Mvts9Qi','','2026-05-25 19:50:25','2026-05-25 19:51:53',0,1,'2026-05-25 19:51:53'),('b6b896c8-e76b-4170-9117-e76890315ad9','example@gmail.com','a.HweyWMBVmyEpahToXZOCWHje1X5nY9u','','2026-04-27 14:14:16','2026-04-27 18:44:50',0,1,'2026-05-23 07:41:40'),('c95e23bb-7a92-47af-a2b3-48d5e9d8a3f7','quyen@gmail.com','$2a$10$/nvz1ezBv0JZs8gZE/cU6e/EUvk2qBLlGJQG3IbEdihr9liBVfTgq','quyen','2025-09-09 20:38:33',NULL,0,1,'2025-09-09 20:38:33');
+/*!40000 ALTER TABLE `users` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
--- Cấu trúc đóng vai cho view `v_item_verification_summary`
--- (See below for the actual view)
+-- Temporary view structure for view `v_batch_status`
 --
-CREATE TABLE `v_item_verification_summary` (
-`item_id` bigint(20)
-,`item_code` varchar(100)
-,`current_status` enum('MANUFACTURED','IN_WAREHOUSE','IN_TRANSIT','DELIVERED','SOLD','EXPIRED','RECALLED','DAMAGED')
-,`total_scans` bigint(21)
-,`consumer_scans` decimal(22,0)
-,`pharmacy_scans` decimal(22,0)
-,`distributor_scans` decimal(22,0)
-,`authentic_scans` decimal(22,0)
-,`suspicious_scans` decimal(22,0)
-,`first_scan` datetime(6)
-,`last_scan` datetime(6)
-);
 
--- --------------------------------------------------------
-
---
--- Cấu trúc đóng vai cho view `v_pharmacy_inventory_full`
--- (See below for the actual view)
---
-CREATE TABLE `v_pharmacy_inventory_full` (
-`id` bigint(20)
-,`pharmacy_id` bigint(20)
-,`batch_id` bigint(20)
-,`drug_name` varchar(255)
-,`manufacturer` varchar(255)
-,`batch_number` varchar(100)
-,`quantity` int(11)
-,`reserved_quantity` int(11)
-,`available_quantity` int(11)
-,`sold_quantity` int(11)
-,`manufacture_date` timestamp
-,`expiry_date` timestamp
-,`qr_code` varchar(1000)
-,`shelf_location` varchar(100)
-,`storage_conditions` varchar(500)
-,`storage_temperature` varchar(50)
-,`cost_price` decimal(15,2)
-,`retail_price` decimal(15,2)
-,`discount_price` decimal(15,2)
-,`total_value` decimal(15,2)
-,`profit_margin` decimal(5,2)
-,`status` enum('IN_STOCK','LOW_STOCK','OUT_OF_STOCK','EXPIRING_SOON','EXPIRED','RECALL')
-,`min_stock_level` int(11)
-,`max_stock_level` int(11)
-,`reorder_point` int(11)
-,`blockchain_batch_id` decimal(38,0)
-,`receive_tx_hash` varchar(66)
-,`current_owner_address` varchar(42)
-,`is_verified` tinyint(1)
-,`received_from_distributor_id` bigint(20)
-,`received_shipment_id` bigint(20)
-,`received_date` timestamp
-,`received_quantity` int(11)
-,`first_sale_date` timestamp
-,`last_sale_date` timestamp
-,`average_daily_sales` decimal(10,2)
-,`days_of_supply` int(11)
-,`requires_prescription` tinyint(1)
-,`controlled_substance` tinyint(1)
-,`is_featured` tinyint(1)
-,`is_on_sale` tinyint(1)
-,`display_order` int(11)
-,`created_at` timestamp
-,`updated_at` timestamp
-,`created_by` varchar(36)
-,`updated_by` varchar(36)
-,`notes` text
-,`pharmacy_name` varchar(255)
-,`pharmacy_wallet` varchar(42)
-,`pharmacy_address` varchar(255)
-,`batch_status` enum('DELIVERED','IN_TRANSIT','MANUFACTURED','SOLD')
-,`manufacturer_address` varchar(42)
-,`days_to_expiry` int(7)
-,`alert_status` varchar(13)
-);
-
--- --------------------------------------------------------
-
---
--- Cấu trúc đóng vai cho view `v_product_items_full`
--- (See below for the actual view)
---
-CREATE TABLE `v_product_items_full` (
-`item_id` bigint(20)
-,`item_code` varchar(100)
-,`current_status` enum('MANUFACTURED','IN_WAREHOUSE','IN_TRANSIT','DELIVERED','SOLD','EXPIRED','RECALLED','DAMAGED')
-,`current_owner_id` bigint(20)
-,`current_owner_type` enum('MANUFACTURER','DISTRIBUTOR','PHARMACY','CONSUMER')
-,`qr_code_data` varchar(500)
-,`item_manufacture_date` datetime(6)
-,`item_expiry_date` datetime(6)
-,`is_blockchain_synced` bit(1)
-,`item_created_at` datetime(6)
-,`batch_id` bigint(20)
-,`batch_number` varchar(100)
-,`blockchain_batch_id` decimal(38,0)
-,`batch_quantity` bigint(20)
-,`batch_status` enum('DELIVERED','IN_TRANSIT','MANUFACTURED','SOLD')
-,`batch_manufacturer` varchar(255)
-,`storage_conditions` varchar(500)
-,`product_id` bigint(20)
-,`product_name` varchar(255)
-,`active_ingredient` varchar(255)
-,`dosage` varchar(100)
-,`dosage_form` enum('tablet','capsule','syrup','injection','cream','drops','other')
-,`category` varchar(100)
-,`manufacturer_id` bigint(20)
-,`registration_number` varchar(100)
-,`product_description` text
-,`expiry_status` varchar(13)
-,`days_until_expiry` int(7)
-);
-
--- --------------------------------------------------------
-
---
--- Cấu trúc đóng vai cho view `v_shipment_history`
--- (See below for the actual view)
---
-CREATE TABLE `v_shipment_history` (
-`shipment_code` varchar(100)
-,`batch_id` decimal(38,0)
-,`drug_name` varchar(255)
-,`batch_number` varchar(100)
-,`from_company` varchar(255)
-,`to_company` varchar(255)
-,`quantity` int(11)
-,`shipment_status` enum('PENDING','IN_TRANSIT','DELIVERED','CANCELLED')
-,`shipment_date` timestamp
-,`expected_delivery_date` timestamp
-,`actual_delivery_date` timestamp
-);
-
--- --------------------------------------------------------
-
---
--- Cấu trúc cho view `v_batch_status`
---
 DROP TABLE IF EXISTS `v_batch_status`;
-
-CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_batch_status`  AS SELECT `db`.`batch_id` AS `batch_id`, `db`.`drug_name` AS `drug_name`, `db`.`batch_number` AS `batch_number`, `db`.`manufacturer` AS `manufacturer`, `db`.`quantity` AS `quantity`, `db`.`status` AS `status`, `db`.`expiry_date` AS `expiry_date`, CASE WHEN `db`.`expiry_date` < current_timestamp() THEN 'EXPIRED' WHEN to_days(`db`.`expiry_date`) - to_days(current_timestamp()) <= 90 THEN 'EXPIRING_SOON' ELSE 'VALID' END AS `validity_status`, `pc`.`name` AS `current_owner_name` FROM (`drug_batches` `db` left join `pharma_companies` `pc` on(`db`.`current_owner` = `pc`.`wallet_address`)) ;
-
--- --------------------------------------------------------
+/*!50001 DROP VIEW IF EXISTS `v_batch_status`*/;
+SET @saved_cs_client     = @@character_set_client;
+/*!50503 SET character_set_client = utf8mb4 */;
+/*!50001 CREATE VIEW `v_batch_status` AS SELECT 
+ 1 AS `batch_id`,
+ 1 AS `drug_name`,
+ 1 AS `batch_number`,
+ 1 AS `manufacturer`,
+ 1 AS `quantity`,
+ 1 AS `status`,
+ 1 AS `expiry_date`,
+ 1 AS `validity_status`,
+ 1 AS `current_owner_name`*/;
+SET character_set_client = @saved_cs_client;
 
 --
--- Cấu trúc cho view `v_blockchain_overview`
+-- Temporary view structure for view `v_blockchain_overview`
 --
+
 DROP TABLE IF EXISTS `v_blockchain_overview`;
-
-CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_blockchain_overview`  AS SELECT `bt`.`transaction_hash` AS `transaction_hash`, `bt`.`function_name` AS `function_name`, `bt`.`from_address` AS `from_address`, `bt`.`to_address` AS `to_address`, `bt`.`status` AS `status`, `bt`.`gas_used` AS `gas_used`, `bt`.`timestamp` AS `timestamp`, `db`.`drug_name` AS `batch_drug_name`, `ds`.`shipment_code` AS `shipment_code` FROM ((`blockchain_transactions` `bt` left join `drug_batches` `db` on(`bt`.`batch_id` = `db`.`id`)) left join `drug_shipments` `ds` on(`bt`.`shipment_id` = `ds`.`id`)) ORDER BY `bt`.`timestamp` DESC ;
-
--- --------------------------------------------------------
+/*!50001 DROP VIEW IF EXISTS `v_blockchain_overview`*/;
+SET @saved_cs_client     = @@character_set_client;
+/*!50503 SET character_set_client = utf8mb4 */;
+/*!50001 CREATE VIEW `v_blockchain_overview` AS SELECT 
+ 1 AS `transaction_hash`,
+ 1 AS `function_name`,
+ 1 AS `from_address`,
+ 1 AS `to_address`,
+ 1 AS `status`,
+ 1 AS `gas_used`,
+ 1 AS `timestamp`,
+ 1 AS `batch_drug_name`,
+ 1 AS `shipment_code`*/;
+SET character_set_client = @saved_cs_client;
 
 --
--- Cấu trúc cho view `v_company_users`
+-- Temporary view structure for view `v_company_users`
 --
+
 DROP TABLE IF EXISTS `v_company_users`;
-
-CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_company_users`  AS SELECT `pc`.`id` AS `company_id`, `pc`.`name` AS `company_name`, `pc`.`company_type` AS `company_type`, `pc`.`wallet_address` AS `wallet_address`, `pc`.`license_number` AS `license_number`, coalesce(`du`.`email`,`mu`.`email`) AS `user_email`, coalesce(`du`.`name`,`mu`.`name`) AS `user_name`, CASE WHEN `du`.`id` is not null THEN 'DISTRIBUTOR' WHEN `mu`.`id` is not null THEN 'MANUFACTURER' ELSE NULL END AS `user_type` FROM ((`pharma_companies` `pc` left join `distributor_users` `du` on(`pc`.`wallet_address` = `du`.`wallet_address`)) left join `manufacturer_users` `mu` on(`pc`.`wallet_address` = `mu`.`wallet_address`)) ;
-
--- --------------------------------------------------------
+/*!50001 DROP VIEW IF EXISTS `v_company_users`*/;
+SET @saved_cs_client     = @@character_set_client;
+/*!50503 SET character_set_client = utf8mb4 */;
+/*!50001 CREATE VIEW `v_company_users` AS SELECT 
+ 1 AS `company_id`,
+ 1 AS `company_name`,
+ 1 AS `company_type`,
+ 1 AS `wallet_address`,
+ 1 AS `license_number`,
+ 1 AS `user_email`,
+ 1 AS `user_name`,
+ 1 AS `user_type`*/;
+SET character_set_client = @saved_cs_client;
 
 --
--- Cấu trúc cho view `v_distributor_inventory_full`
+-- Temporary view structure for view `v_distributor_inventory_full`
 --
+
 DROP TABLE IF EXISTS `v_distributor_inventory_full`;
-
-CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_distributor_inventory_full`  AS SELECT `di`.`id` AS `id`, `di`.`distributor_id` AS `distributor_id`, `di`.`batch_id` AS `batch_id`, `di`.`drug_name` AS `drug_name`, `di`.`manufacturer` AS `manufacturer`, `di`.`batch_number` AS `batch_number`, `di`.`quantity` AS `quantity`, `di`.`reserved_quantity` AS `reserved_quantity`, `di`.`available_quantity` AS `available_quantity`, `di`.`manufacture_date` AS `manufacture_date`, `di`.`expiry_date` AS `expiry_date`, `di`.`qr_code` AS `qr_code`, `di`.`warehouse_location` AS `warehouse_location`, `di`.`storage_conditions` AS `storage_conditions`, `di`.`storage_temperature` AS `storage_temperature`, `di`.`unit_price` AS `unit_price`, `di`.`selling_price` AS `selling_price`, `di`.`total_value` AS `total_value`, `di`.`status` AS `status`, `di`.`min_stock_level` AS `min_stock_level`, `di`.`max_stock_level` AS `max_stock_level`, `di`.`blockchain_batch_id` AS `blockchain_batch_id`, `di`.`receive_tx_hash` AS `receive_tx_hash`, `di`.`current_owner_address` AS `current_owner_address`, `di`.`received_from_company_id` AS `received_from_company_id`, `di`.`received_shipment_id` AS `received_shipment_id`, `di`.`received_date` AS `received_date`, `di`.`received_quantity` AS `received_quantity`, `di`.`created_at` AS `created_at`, `di`.`updated_at` AS `updated_at`, `di`.`created_by` AS `created_by`, `di`.`updated_by` AS `updated_by`, `di`.`notes` AS `notes`, `pc`.`name` AS `distributor_name`, `pc`.`wallet_address` AS `distributor_wallet`, `db`.`status` AS `batch_status`, `db`.`manufacturer_address` AS `manufacturer_address`, to_days(`di`.`expiry_date`) - to_days(current_timestamp()) AS `days_to_expiry`, CASE WHEN `di`.`available_quantity` <= `di`.`min_stock_level` THEN 'NEED_REORDER' WHEN to_days(`di`.`expiry_date`) - to_days(current_timestamp()) <= 30 THEN 'EXPIRING_SOON' ELSE 'NORMAL' END AS `alert_status` FROM ((`distributor_inventory` `di` join `pharma_companies` `pc` on(`di`.`distributor_id` = `pc`.`id`)) join `drug_batches` `db` on(`di`.`batch_id` = `db`.`id`)) WHERE `pc`.`company_type` = 'DISTRIBUTOR' ;
-
--- --------------------------------------------------------
+/*!50001 DROP VIEW IF EXISTS `v_distributor_inventory_full`*/;
+SET @saved_cs_client     = @@character_set_client;
+/*!50503 SET character_set_client = utf8mb4 */;
+/*!50001 CREATE VIEW `v_distributor_inventory_full` AS SELECT 
+ 1 AS `id`,
+ 1 AS `distributor_id`,
+ 1 AS `batch_id`,
+ 1 AS `drug_name`,
+ 1 AS `manufacturer`,
+ 1 AS `batch_number`,
+ 1 AS `quantity`,
+ 1 AS `reserved_quantity`,
+ 1 AS `available_quantity`,
+ 1 AS `manufacture_date`,
+ 1 AS `expiry_date`,
+ 1 AS `qr_code`,
+ 1 AS `warehouse_location`,
+ 1 AS `storage_conditions`,
+ 1 AS `storage_temperature`,
+ 1 AS `unit_price`,
+ 1 AS `selling_price`,
+ 1 AS `total_value`,
+ 1 AS `status`,
+ 1 AS `min_stock_level`,
+ 1 AS `max_stock_level`,
+ 1 AS `blockchain_batch_id`,
+ 1 AS `receive_tx_hash`,
+ 1 AS `current_owner_address`,
+ 1 AS `received_from_company_id`,
+ 1 AS `received_shipment_id`,
+ 1 AS `received_date`,
+ 1 AS `received_quantity`,
+ 1 AS `created_at`,
+ 1 AS `updated_at`,
+ 1 AS `created_by`,
+ 1 AS `updated_by`,
+ 1 AS `notes`,
+ 1 AS `distributor_name`,
+ 1 AS `distributor_wallet`,
+ 1 AS `batch_status`,
+ 1 AS `manufacturer_address`,
+ 1 AS `days_to_expiry`,
+ 1 AS `alert_status`*/;
+SET character_set_client = @saved_cs_client;
 
 --
--- Cấu trúc cho view `v_item_movement_summary`
+-- Temporary view structure for view `v_item_movement_summary`
 --
+
 DROP TABLE IF EXISTS `v_item_movement_summary`;
-
-CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_item_movement_summary`  AS SELECT `pi`.`id` AS `item_id`, `pi`.`item_code` AS `item_code`, `pi`.`current_status` AS `current_status`, count(`pim`.`id`) AS `total_movements`, min(`pim`.`movement_timestamp`) AS `first_movement`, max(`pim`.`movement_timestamp`) AS `last_movement`, sum(case when `pim`.`movement_type` = 'SHIP' then 1 else 0 end) AS `ship_count`, sum(case when `pim`.`movement_type` = 'RECEIVE' then 1 else 0 end) AS `receive_count`, sum(case when `pim`.`movement_type` = 'SALE' then 1 else 0 end) AS `sale_count`, sum(case when `pim`.`is_blockchain_synced` = 0x01 then 1 else 0 end) AS `blockchain_synced_count` FROM (`product_items` `pi` left join `product_item_movements` `pim` on(`pi`.`id` = `pim`.`item_id`)) GROUP BY `pi`.`id`, `pi`.`item_code`, `pi`.`current_status` ;
-
--- --------------------------------------------------------
+/*!50001 DROP VIEW IF EXISTS `v_item_movement_summary`*/;
+SET @saved_cs_client     = @@character_set_client;
+/*!50503 SET character_set_client = utf8mb4 */;
+/*!50001 CREATE VIEW `v_item_movement_summary` AS SELECT 
+ 1 AS `item_id`,
+ 1 AS `item_code`,
+ 1 AS `current_status`,
+ 1 AS `total_movements`,
+ 1 AS `first_movement`,
+ 1 AS `last_movement`,
+ 1 AS `ship_count`,
+ 1 AS `receive_count`,
+ 1 AS `sale_count`,
+ 1 AS `blockchain_synced_count`*/;
+SET character_set_client = @saved_cs_client;
 
 --
--- Cấu trúc cho view `v_item_verification_summary`
+-- Temporary view structure for view `v_item_verification_summary`
 --
+
 DROP TABLE IF EXISTS `v_item_verification_summary`;
-
-CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_item_verification_summary`  AS SELECT `pi`.`id` AS `item_id`, `pi`.`item_code` AS `item_code`, `pi`.`current_status` AS `current_status`, count(`piv`.`id`) AS `total_scans`, sum(case when `piv`.`scanner_type` = 'CONSUMER' then 1 else 0 end) AS `consumer_scans`, sum(case when `piv`.`scanner_type` = 'PHARMACY' then 1 else 0 end) AS `pharmacy_scans`, sum(case when `piv`.`scanner_type` = 'DISTRIBUTOR' then 1 else 0 end) AS `distributor_scans`, sum(case when `piv`.`verification_result` = 'AUTHENTIC' then 1 else 0 end) AS `authentic_scans`, sum(case when `piv`.`verification_result` = 'SUSPICIOUS' then 1 else 0 end) AS `suspicious_scans`, min(`piv`.`scan_timestamp`) AS `first_scan`, max(`piv`.`scan_timestamp`) AS `last_scan` FROM (`product_items` `pi` left join `product_item_verifications` `piv` on(`pi`.`id` = `piv`.`item_id`)) GROUP BY `pi`.`id`, `pi`.`item_code`, `pi`.`current_status` ;
-
--- --------------------------------------------------------
+/*!50001 DROP VIEW IF EXISTS `v_item_verification_summary`*/;
+SET @saved_cs_client     = @@character_set_client;
+/*!50503 SET character_set_client = utf8mb4 */;
+/*!50001 CREATE VIEW `v_item_verification_summary` AS SELECT 
+ 1 AS `item_id`,
+ 1 AS `item_code`,
+ 1 AS `current_status`,
+ 1 AS `total_scans`,
+ 1 AS `consumer_scans`,
+ 1 AS `pharmacy_scans`,
+ 1 AS `distributor_scans`,
+ 1 AS `authentic_scans`,
+ 1 AS `suspicious_scans`,
+ 1 AS `first_scan`,
+ 1 AS `last_scan`*/;
+SET character_set_client = @saved_cs_client;
 
 --
--- Cấu trúc cho view `v_pharmacy_inventory_full`
+-- Temporary view structure for view `v_pharmacy_inventory_full`
 --
+
 DROP TABLE IF EXISTS `v_pharmacy_inventory_full`;
-
-CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_pharmacy_inventory_full`  AS SELECT `pi`.`id` AS `id`, `pi`.`pharmacy_id` AS `pharmacy_id`, `pi`.`batch_id` AS `batch_id`, `pi`.`drug_name` AS `drug_name`, `pi`.`manufacturer` AS `manufacturer`, `pi`.`batch_number` AS `batch_number`, `pi`.`quantity` AS `quantity`, `pi`.`reserved_quantity` AS `reserved_quantity`, `pi`.`available_quantity` AS `available_quantity`, `pi`.`sold_quantity` AS `sold_quantity`, `pi`.`manufacture_date` AS `manufacture_date`, `pi`.`expiry_date` AS `expiry_date`, `pi`.`qr_code` AS `qr_code`, `pi`.`shelf_location` AS `shelf_location`, `pi`.`storage_conditions` AS `storage_conditions`, `pi`.`storage_temperature` AS `storage_temperature`, `pi`.`cost_price` AS `cost_price`, `pi`.`retail_price` AS `retail_price`, `pi`.`discount_price` AS `discount_price`, `pi`.`total_value` AS `total_value`, `pi`.`profit_margin` AS `profit_margin`, `pi`.`status` AS `status`, `pi`.`min_stock_level` AS `min_stock_level`, `pi`.`max_stock_level` AS `max_stock_level`, `pi`.`reorder_point` AS `reorder_point`, `pi`.`blockchain_batch_id` AS `blockchain_batch_id`, `pi`.`receive_tx_hash` AS `receive_tx_hash`, `pi`.`current_owner_address` AS `current_owner_address`, `pi`.`is_verified` AS `is_verified`, `pi`.`received_from_distributor_id` AS `received_from_distributor_id`, `pi`.`received_shipment_id` AS `received_shipment_id`, `pi`.`received_date` AS `received_date`, `pi`.`received_quantity` AS `received_quantity`, `pi`.`first_sale_date` AS `first_sale_date`, `pi`.`last_sale_date` AS `last_sale_date`, `pi`.`average_daily_sales` AS `average_daily_sales`, `pi`.`days_of_supply` AS `days_of_supply`, `pi`.`requires_prescription` AS `requires_prescription`, `pi`.`controlled_substance` AS `controlled_substance`, `pi`.`is_featured` AS `is_featured`, `pi`.`is_on_sale` AS `is_on_sale`, `pi`.`display_order` AS `display_order`, `pi`.`created_at` AS `created_at`, `pi`.`updated_at` AS `updated_at`, `pi`.`created_by` AS `created_by`, `pi`.`updated_by` AS `updated_by`, `pi`.`notes` AS `notes`, `pc`.`name` AS `pharmacy_name`, `pc`.`wallet_address` AS `pharmacy_wallet`, `pc`.`address` AS `pharmacy_address`, `db`.`status` AS `batch_status`, `db`.`manufacturer_address` AS `manufacturer_address`, to_days(`pi`.`expiry_date`) - to_days(current_timestamp()) AS `days_to_expiry`, CASE WHEN `pi`.`available_quantity` <= 0 THEN 'OUT_OF_STOCK' WHEN `pi`.`available_quantity` <= `pi`.`reorder_point` THEN 'NEED_REORDER' WHEN to_days(`pi`.`expiry_date`) - to_days(current_timestamp()) <= 30 THEN 'EXPIRING_SOON' ELSE 'NORMAL' END AS `alert_status` FROM ((`pharmacy_inventory` `pi` join `pharma_companies` `pc` on(`pi`.`pharmacy_id` = `pc`.`id`)) join `drug_batches` `db` on(`pi`.`batch_id` = `db`.`id`)) WHERE `pc`.`company_type` = 'PHARMACY' ;
-
--- --------------------------------------------------------
+/*!50001 DROP VIEW IF EXISTS `v_pharmacy_inventory_full`*/;
+SET @saved_cs_client     = @@character_set_client;
+/*!50503 SET character_set_client = utf8mb4 */;
+/*!50001 CREATE VIEW `v_pharmacy_inventory_full` AS SELECT 
+ 1 AS `id`,
+ 1 AS `pharmacy_id`,
+ 1 AS `batch_id`,
+ 1 AS `drug_name`,
+ 1 AS `manufacturer`,
+ 1 AS `batch_number`,
+ 1 AS `quantity`,
+ 1 AS `reserved_quantity`,
+ 1 AS `available_quantity`,
+ 1 AS `sold_quantity`,
+ 1 AS `manufacture_date`,
+ 1 AS `expiry_date`,
+ 1 AS `qr_code`,
+ 1 AS `shelf_location`,
+ 1 AS `storage_conditions`,
+ 1 AS `storage_temperature`,
+ 1 AS `cost_price`,
+ 1 AS `retail_price`,
+ 1 AS `discount_price`,
+ 1 AS `total_value`,
+ 1 AS `profit_margin`,
+ 1 AS `status`,
+ 1 AS `min_stock_level`,
+ 1 AS `max_stock_level`,
+ 1 AS `reorder_point`,
+ 1 AS `blockchain_batch_id`,
+ 1 AS `receive_tx_hash`,
+ 1 AS `current_owner_address`,
+ 1 AS `is_verified`,
+ 1 AS `received_from_distributor_id`,
+ 1 AS `received_shipment_id`,
+ 1 AS `received_date`,
+ 1 AS `received_quantity`,
+ 1 AS `first_sale_date`,
+ 1 AS `last_sale_date`,
+ 1 AS `average_daily_sales`,
+ 1 AS `days_of_supply`,
+ 1 AS `requires_prescription`,
+ 1 AS `controlled_substance`,
+ 1 AS `is_featured`,
+ 1 AS `is_on_sale`,
+ 1 AS `display_order`,
+ 1 AS `created_at`,
+ 1 AS `updated_at`,
+ 1 AS `created_by`,
+ 1 AS `updated_by`,
+ 1 AS `notes`,
+ 1 AS `pharmacy_name`,
+ 1 AS `pharmacy_wallet`,
+ 1 AS `pharmacy_address`,
+ 1 AS `batch_status`,
+ 1 AS `manufacturer_address`,
+ 1 AS `days_to_expiry`,
+ 1 AS `alert_status`*/;
+SET character_set_client = @saved_cs_client;
 
 --
--- Cấu trúc cho view `v_product_items_full`
+-- Temporary view structure for view `v_product_items_full`
 --
+
 DROP TABLE IF EXISTS `v_product_items_full`;
-
-CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_product_items_full`  AS SELECT `pi`.`id` AS `item_id`, `pi`.`item_code` AS `item_code`, `pi`.`current_status` AS `current_status`, `pi`.`current_owner_id` AS `current_owner_id`, `pi`.`current_owner_type` AS `current_owner_type`, `pi`.`qr_code_data` AS `qr_code_data`, `pi`.`manufacture_date` AS `item_manufacture_date`, `pi`.`expiry_date` AS `item_expiry_date`, `pi`.`is_blockchain_synced` AS `is_blockchain_synced`, `pi`.`created_at` AS `item_created_at`, `db`.`id` AS `batch_id`, `db`.`batch_number` AS `batch_number`, `db`.`batch_id` AS `blockchain_batch_id`, `db`.`quantity` AS `batch_quantity`, `db`.`status` AS `batch_status`, `db`.`manufacturer` AS `batch_manufacturer`, `db`.`storage_conditions` AS `storage_conditions`, `dp`.`id` AS `product_id`, `dp`.`name` AS `product_name`, `dp`.`active_ingredient` AS `active_ingredient`, `dp`.`dosage` AS `dosage`, `dp`.`dosage_form` AS `dosage_form`, `dp`.`category` AS `category`, `dp`.`manufacturer_id` AS `manufacturer_id`, `dp`.`registration_number` AS `registration_number`, `dp`.`description` AS `product_description`, CASE WHEN `pi`.`expiry_date` < current_timestamp() THEN 'EXPIRED' WHEN `pi`.`expiry_date` < current_timestamp() + interval 3 month THEN 'EXPIRING_SOON' ELSE 'VALID' END AS `expiry_status`, to_days(`pi`.`expiry_date`) - to_days(current_timestamp()) AS `days_until_expiry` FROM ((`product_items` `pi` join `drug_batches` `db` on(`pi`.`batch_id` = `db`.`id`)) join `drug_products` `dp` on(`pi`.`drug_product_id` = `dp`.`id`)) ;
-
--- --------------------------------------------------------
+/*!50001 DROP VIEW IF EXISTS `v_product_items_full`*/;
+SET @saved_cs_client     = @@character_set_client;
+/*!50503 SET character_set_client = utf8mb4 */;
+/*!50001 CREATE VIEW `v_product_items_full` AS SELECT 
+ 1 AS `item_id`,
+ 1 AS `item_code`,
+ 1 AS `current_status`,
+ 1 AS `current_owner_id`,
+ 1 AS `current_owner_type`,
+ 1 AS `qr_code_data`,
+ 1 AS `item_manufacture_date`,
+ 1 AS `item_expiry_date`,
+ 1 AS `is_blockchain_synced`,
+ 1 AS `item_created_at`,
+ 1 AS `batch_id`,
+ 1 AS `batch_number`,
+ 1 AS `blockchain_batch_id`,
+ 1 AS `batch_quantity`,
+ 1 AS `batch_status`,
+ 1 AS `batch_manufacturer`,
+ 1 AS `storage_conditions`,
+ 1 AS `product_id`,
+ 1 AS `product_name`,
+ 1 AS `active_ingredient`,
+ 1 AS `dosage`,
+ 1 AS `dosage_form`,
+ 1 AS `category`,
+ 1 AS `manufacturer_id`,
+ 1 AS `registration_number`,
+ 1 AS `product_description`,
+ 1 AS `expiry_status`,
+ 1 AS `days_until_expiry`*/;
+SET character_set_client = @saved_cs_client;
 
 --
--- Cấu trúc cho view `v_shipment_history`
+-- Temporary view structure for view `v_shipment_history`
 --
+
 DROP TABLE IF EXISTS `v_shipment_history`;
-
-CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_shipment_history`  AS SELECT `ds`.`shipment_code` AS `shipment_code`, `db`.`batch_id` AS `batch_id`, `db`.`drug_name` AS `drug_name`, `db`.`batch_number` AS `batch_number`, `fc`.`name` AS `from_company`, `tc`.`name` AS `to_company`, `ds`.`quantity` AS `quantity`, `ds`.`shipment_status` AS `shipment_status`, `ds`.`shipment_date` AS `shipment_date`, `ds`.`expected_delivery_date` AS `expected_delivery_date`, `ds`.`actual_delivery_date` AS `actual_delivery_date` FROM (((`drug_shipments` `ds` join `drug_batches` `db` on(`ds`.`batch_id` = `db`.`id`)) join `pharma_companies` `fc` on(`ds`.`from_company_id` = `fc`.`id`)) join `pharma_companies` `tc` on(`ds`.`to_company_id` = `tc`.`id`)) ;
-
---
--- Chỉ mục cho các bảng đã đổ
---
-
---
--- Chỉ mục cho bảng `allergen_categories`
---
-ALTER TABLE `allergen_categories`
-  ADD PRIMARY KEY (`id`);
-
---
--- Chỉ mục cho bảng `app_users`
---
-ALTER TABLE `app_users`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `UK4vj92ux8a2eehds1mdvmks473` (`email`),
-  ADD UNIQUE KEY `UKr5r4rpieqrjfj44jh43gabif1` (`phone`);
-
---
--- Chỉ mục cho bảng `blockchain_config`
---
-ALTER TABLE `blockchain_config`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `config_key` (`config_key`),
-  ADD KEY `idx_config_key` (`config_key`),
-  ADD KEY `idx_is_active` (`is_active`);
-
---
--- Chỉ mục cho bảng `blockchain_events`
---
-ALTER TABLE `blockchain_events`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `UKmy081fpj6u877vqk9jv516sr4` (`transaction_hash`),
-  ADD KEY `idx_block_number` (`block_number`),
-  ADD KEY `idx_transaction_hash` (`transaction_hash`),
-  ADD KEY `idx_event_type` (`event_type`),
-  ADD KEY `idx_transaction_hash_be` (`transaction_hash`);
-
---
--- Chỉ mục cho bảng `blockchain_transactions`
---
-ALTER TABLE `blockchain_transactions`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `UKp634ahad8pjht0rqxixrykeu4` (`transaction_hash`),
-  ADD UNIQUE KEY `idx_transaction_hash` (`transaction_hash`),
-  ADD KEY `idx_from_address` (`from_address`),
-  ADD KEY `idx_batch_id` (`batch_id`),
-  ADD KEY `idx_shipment_id` (`shipment_id`),
-  ADD KEY `idx_status` (`status`),
-  ADD KEY `idx_composite_status_timestamp` (`status`,`timestamp`),
-  ADD KEY `idx_from_address_bt` (`from_address`),
-  ADD KEY `idx_batch_id_bt` (`batch_id`),
-  ADD KEY `idx_shipment_id_bt` (`shipment_id`),
-  ADD KEY `idx_status_bt` (`status`);
-
---
--- Chỉ mục cho bảng `disease_categories`
---
-ALTER TABLE `disease_categories`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `FKs57ajxig1nh76dtsynjj424yn` (`specialty_id`);
-
---
--- Chỉ mục cho bảng `dispense_instructions`
---
-ALTER TABLE `dispense_instructions`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `FK71iej3cfeq289mji8fodpx7r7` (`customer_app_user_id`),
-  ADD KEY `FKcv89b3tglirm3lxbdrevl79qx` (`product_item_id`);
-
---
--- Chỉ mục cho bảng `distributors`
---
-ALTER TABLE `distributors`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `UKck47qvoigd7gh59moffh0kub0` (`wallet_address`);
-
---
--- Chỉ mục cho bảng `distributor_inventory`
---
-ALTER TABLE `distributor_inventory`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `unique_distributor_batch` (`distributor_id`,`batch_id`),
-  ADD KEY `idx_distributor_id` (`distributor_id`),
-  ADD KEY `idx_batch_id` (`batch_id`),
-  ADD KEY `idx_status` (`status`),
-  ADD KEY `idx_expiry_date` (`expiry_date`),
-  ADD KEY `idx_available_quantity` (`available_quantity`),
-  ADD KEY `fk_dist_inv_received_from` (`received_from_company_id`),
-  ADD KEY `fk_dist_inv_shipment` (`received_shipment_id`);
-
---
--- Chỉ mục cho bảng `distributor_users`
---
-ALTER TABLE `distributor_users`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `UKmpvt4be3vwqcoed0ovvdh7jil` (`email`),
-  ADD UNIQUE KEY `idx_email` (`email`),
-  ADD UNIQUE KEY `idx_email_dist` (`email`),
-  ADD UNIQUE KEY `unique_distributor_wallet` (`wallet_address`),
-  ADD KEY `idx_wallet_address` (`wallet_address`),
-  ADD KEY `idx_wallet_address_dist` (`wallet_address`);
-
---
--- Chỉ mục cho bảng `drug_batches`
---
-ALTER TABLE `drug_batches`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `UKt9md736g9fj8cosy0i1ewwaop` (`batch_id`),
-  ADD KEY `idx_batch_id` (`batch_id`),
-  ADD KEY `idx_qr_code` (`qr_code`(100)),
-  ADD KEY `idx_manufacturer_address` (`manufacturer_address`),
-  ADD KEY `idx_current_owner` (`current_owner`),
-  ADD KEY `idx_status` (`status`),
-  ADD KEY `idx_composite_status_expiry` (`status`,`expiry_date`);
-
---
--- Chỉ mục cho bảng `drug_products`
---
-ALTER TABLE `drug_products`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `idx_drug_products_manufacturer` (`manufacturer_id`),
-  ADD KEY `idx_drug_products_name` (`name`),
-  ADD KEY `idx_drug_products_category` (`category`),
-  ADD KEY `idx_drug_products_active` (`is_active`),
-  ADD KEY `idx_drug_products_manufacturer_id` (`manufacturer_id`),
-  ADD KEY `idx_manufacturer_id` (`manufacturer_id`),
-  ADD KEY `idx_registration_number` (`registration_number`);
-ALTER TABLE `drug_products` ADD FULLTEXT KEY `name` (`name`,`active_ingredient`,`description`);
-ALTER TABLE `drug_products` ADD FULLTEXT KEY `name_2` (`name`,`active_ingredient`,`description`);
-
---
--- Chỉ mục cho bảng `drug_shipments`
---
-ALTER TABLE `drug_shipments`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `shipment_code` (`shipment_code`),
-  ADD UNIQUE KEY `idx_shipment_code` (`shipment_code`),
-  ADD KEY `idx_drug_shipments_batch` (`batch_id`),
-  ADD KEY `idx_drug_shipments_from` (`from_company_id`),
-  ADD KEY `idx_drug_shipments_to` (`to_company_id`),
-  ADD KEY `idx_drug_shipments_status` (`shipment_status`),
-  ADD KEY `idx_drug_shipments_batch_id` (`batch_id`),
-  ADD KEY `idx_drug_shipments_from_company` (`from_company_id`),
-  ADD KEY `idx_drug_shipments_to_company` (`to_company_id`),
-  ADD KEY `idx_drug_shipments_shipment_date` (`shipment_date`),
-  ADD KEY `idx_drug_shipments_shipment_code` (`shipment_code`),
-  ADD KEY `idx_batch_id` (`batch_id`),
-  ADD KEY `idx_from_company` (`from_company_id`),
-  ADD KEY `idx_to_company` (`to_company_id`),
-  ADD KEY `idx_shipment_status` (`shipment_status`),
-  ADD KEY `idx_composite_status_date` (`shipment_status`,`shipment_date`),
-  ADD KEY `idx_batch_id_shipments` (`batch_id`),
-  ADD KEY `idx_shipping_method` (`shipping_method`),
-  ADD KEY `idx_actual_items_count` (`actual_items_count`);
-
---
--- Chỉ mục cho bảng `drug_verification_records`
---
-ALTER TABLE `drug_verification_records`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `idx_verification_records_batch` (`batch_id`),
-  ADD KEY `idx_verification_records_company` (`verified_by_company_id`),
-  ADD KEY `idx_verification_records_date` (`verification_date`),
-  ADD KEY `idx_verification_records_type` (`verification_type`),
-  ADD KEY `idx_verification_records_authentic` (`is_authentic`),
-  ADD KEY `idx_verification_records_composite` (`batch_id`,`verification_date`,`is_authentic`),
-  ADD KEY `idx_batch_id` (`batch_id`),
-  ADD KEY `idx_verification_date` (`verification_date`),
-  ADD KEY `idx_is_authentic` (`is_authentic`),
-  ADD KEY `idx_batch_id_dvr` (`batch_id`);
-
---
--- Chỉ mục cho bảng `inventory_movements`
---
-ALTER TABLE `inventory_movements`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `idx_inventory_type_id` (`inventory_type`,`inventory_id`),
-  ADD KEY `idx_movement_type` (`movement_type`),
-  ADD KEY `idx_movement_date` (`movement_date`),
-  ADD KEY `idx_related_shipment` (`related_shipment_id`);
-
---
--- Chỉ mục cho bảng `manufacturer_users`
---
-ALTER TABLE `manufacturer_users`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `UK95h07q846p7dv5v8l5epve0vs` (`email`),
-  ADD UNIQUE KEY `idx_email` (`email`),
-  ADD UNIQUE KEY `idx_email_manu` (`email`),
-  ADD UNIQUE KEY `unique_manufacturer_wallet` (`wallet_address`),
-  ADD KEY `idx_manufacturer_user_email` (`email`),
-  ADD KEY `idx_manufacturer_user_wallet_address` (`wallet_address`),
-  ADD KEY `idx_manufacturer_user_role` (`role`),
-  ADD KEY `idx_wallet_address` (`wallet_address`),
-  ADD KEY `idx_wallet_address_manu` (`wallet_address`);
-
---
--- Chỉ mục cho bảng `medical_specialties`
---
-ALTER TABLE `medical_specialties`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `UKlhtvpg16rimsy4mkpmj5qhx2x` (`name`),
-  ADD KEY `FKopvnsmewctm3u4tb8y86mnwss` (`parent_specialty_id`);
-
---
--- Chỉ mục cho bảng `medications`
---
-ALTER TABLE `medications`
-  ADD PRIMARY KEY (`id`);
-
---
--- Chỉ mục cho bảng `medication_reminders`
---
-ALTER TABLE `medication_reminders`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `FK75mil2vo3q2yxwo8jpnya2wjy` (`record_id`);
-
---
--- Chỉ mục cho bảng `ml_model_performance`
---
-ALTER TABLE `ml_model_performance`
-  ADD PRIMARY KEY (`id`);
-
---
--- Chỉ mục cho bảng `news_articles`
---
-ALTER TABLE `news_articles`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `FKke29j5hkg9i08d4a8lhb48q6p` (`primary_category_id`);
-
---
--- Chỉ mục cho bảng `ownership_history`
---
-ALTER TABLE `ownership_history`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `idx_ownership_history_batch` (`batch_id`),
-  ADD KEY `idx_ownership_history_tx_hash` (`blockchain_tx_hash`),
-  ADD KEY `idx_ownership_history_transfer_date` (`transfer_date`),
-  ADD KEY `idx_ownership_history_from` (`from_company_id`),
-  ADD KEY `idx_ownership_history_to` (`to_company_id`),
-  ADD KEY `idx_ownership_history_composite` (`batch_id`,`transfer_date`,`transfer_type`),
-  ADD KEY `idx_batch_id` (`batch_id`),
-  ADD KEY `idx_transfer_date` (`transfer_date`),
-  ADD KEY `idx_blockchain_tx_hash` (`blockchain_tx_hash`),
-  ADD KEY `idx_batch_id_oh` (`batch_id`);
-
---
--- Chỉ mục cho bảng `pharmacy_inventory`
---
-ALTER TABLE `pharmacy_inventory`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `unique_pharmacy_batch` (`pharmacy_id`,`batch_id`),
-  ADD KEY `idx_pharmacy_id` (`pharmacy_id`),
-  ADD KEY `idx_batch_id` (`batch_id`),
-  ADD KEY `idx_status` (`status`),
-  ADD KEY `idx_expiry_date` (`expiry_date`),
-  ADD KEY `idx_available_quantity` (`available_quantity`),
-  ADD KEY `idx_drug_name` (`drug_name`),
-  ADD KEY `idx_is_featured` (`is_featured`),
-  ADD KEY `fk_pharm_inv_distributor` (`received_from_distributor_id`),
-  ADD KEY `fk_pharm_inv_shipment` (`received_shipment_id`);
-
---
--- Chỉ mục cho bảng `pharmacy_users`
---
-ALTER TABLE `pharmacy_users`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `email` (`email`),
-  ADD UNIQUE KEY `pharmacy_code` (`pharmacy_code`),
-  ADD UNIQUE KEY `wallet_address` (`wallet_address`),
-  ADD KEY `idx_email` (`email`),
-  ADD KEY `idx_wallet_address` (`wallet_address`),
-  ADD KEY `idx_pharmacy_code` (`pharmacy_code`);
-
---
--- Chỉ mục cho bảng `pharma_companies`
---
-ALTER TABLE `pharma_companies`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `license_number` (`license_number`),
-  ADD UNIQUE KEY `wallet_address` (`wallet_address`),
-  ADD UNIQUE KEY `wallet_address_2` (`wallet_address`),
-  ADD UNIQUE KEY `wallet_address_3` (`wallet_address`),
-  ADD KEY `idx_pharma_companies_type` (`company_type`),
-  ADD KEY `idx_pharma_companies_wallet` (`wallet_address`),
-  ADD KEY `idx_pharma_companies_license` (`license_number`),
-  ADD KEY `idx_pharma_companies_active` (`is_active`),
-  ADD KEY `idx_company_type` (`company_type`),
-  ADD KEY `idx_wallet_address` (`wallet_address`);
-ALTER TABLE `pharma_companies` ADD FULLTEXT KEY `name` (`name`,`address`);
-ALTER TABLE `pharma_companies` ADD FULLTEXT KEY `name_2` (`name`,`address`);
-
---
--- Chỉ mục cho bảng `product_items`
---
-ALTER TABLE `product_items`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `uk_item_code` (`item_code`),
-  ADD KEY `idx_batch_id` (`batch_id`),
-  ADD KEY `idx_drug_product_id` (`drug_product_id`),
-  ADD KEY `idx_current_status` (`current_status`),
-  ADD KEY `idx_qr_code_data` (`qr_code_data`),
-  ADD KEY `idx_batch_status` (`batch_id`,`current_status`),
-  ADD KEY `idx_expiry_date` (`expiry_date`),
-  ADD KEY `idx_owner` (`current_owner_id`,`current_owner_type`);
-
---
--- Chỉ mục cho bảng `product_item_movements`
---
-ALTER TABLE `product_item_movements`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `idx_item_id` (`item_id`),
-  ADD KEY `idx_batch_id` (`batch_id`),
-  ADD KEY `idx_movement_timestamp` (`movement_timestamp`),
-  ADD KEY `idx_item_timestamp` (`item_id`,`movement_timestamp`),
-  ADD KEY `idx_from_company` (`from_company_id`,`movement_type`),
-  ADD KEY `idx_to_company` (`to_company_id`,`movement_type`),
-  ADD KEY `idx_shipment` (`shipment_id`),
-  ADD KEY `idx_movement_type` (`movement_type`);
-
---
--- Chỉ mục cho bảng `product_item_verifications`
---
-ALTER TABLE `product_item_verifications`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `idx_item_id` (`item_id`),
-  ADD KEY `idx_scan_timestamp` (`scan_timestamp`),
-  ADD KEY `idx_scanner_type_time` (`scanner_type`,`scan_timestamp`),
-  ADD KEY `idx_verification_result` (`verification_result`),
-  ADD KEY `idx_scanner` (`scanner_id`,`scanner_type`),
-  ADD KEY `idx_item_scanner` (`item_id`,`scanner_type`);
-
---
--- Chỉ mục cho bảng `provinces`
---
-ALTER TABLE `provinces`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `UKl256wnwfdobq071mcq7rckr9y` (`name`);
-
---
--- Chỉ mục cho bảng `symptoms`
---
-ALTER TABLE `symptoms`
-  ADD PRIMARY KEY (`id`);
-
---
--- Chỉ mục cho bảng `users`
---
-ALTER TABLE `users`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `email` (`email`);
-
---
--- Chỉ mục cho bảng `user_allergies`
---
-ALTER TABLE `user_allergies`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `UKlpfcepd1quxrwrg1iso3rbtol` (`user_id`,`allergen_id`),
-  ADD KEY `FKe9l0g417v7f5a0x7mlgd8nef6` (`allergen_id`);
-
---
--- Chỉ mục cho bảng `user_analytics`
---
-ALTER TABLE `user_analytics`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `UK7mdo9lpckgwptue7g6mcadpbt` (`user_id`,`session_date`);
-
---
--- Chỉ mục cho bảng `user_blockchain_addresses`
---
-ALTER TABLE `user_blockchain_addresses`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `unique_user_address_type` (`user_id`,`address_type`),
-  ADD KEY `idx_user_id` (`user_id`),
-  ADD KEY `idx_blockchain_address` (`blockchain_address`),
-  ADD KEY `idx_address_type` (`address_type`),
-  ADD KEY `idx_is_verified` (`is_verified`);
-
---
--- Chỉ mục cho bảng `user_chronic_diseases`
---
-ALTER TABLE `user_chronic_diseases`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `UK8sygvsr1aj77insmjtoxe1slp` (`user_id`,`disease_id`),
-  ADD KEY `FK8vrsx37q69dypyauw2ofhdglk` (`disease_id`);
-
---
--- Chỉ mục cho bảng `user_demographics`
---
-ALTER TABLE `user_demographics`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `UKf6vynx60dpd6wgq0vqsbjw73s` (`user_id`),
-  ADD KEY `FKgtdim7lin9k4ksae3rlai3423` (`province_id`);
-
---
--- Chỉ mục cho bảng `user_family_history`
---
-ALTER TABLE `user_family_history`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `FK5j07xbkwg6ar194tpu0pnjc1u` (`cause_of_death`),
-  ADD KEY `FK5kfo8kst0cfl6bn3jnqnkaya3` (`disease_id`),
-  ADD KEY `FKo72n0klmcu5t03ubdrqg1erlg` (`user_id`);
-
---
--- Chỉ mục cho bảng `user_lifestyle`
---
-ALTER TABLE `user_lifestyle`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `UKyep64m0od2ba5hj03pp6hao4` (`user_id`);
-
---
--- Chỉ mục cho bảng `user_medications`
---
-ALTER TABLE `user_medications`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `FKqdnk12od7cjg3denr5poygql8` (`medication_id`),
-  ADD KEY `FK19lmjhtt7n8cqs1csr37kxe3t` (`user_id`);
-
---
--- Chỉ mục cho bảng `user_medication_records`
---
-ALTER TABLE `user_medication_records`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `FKpb1evaoa70h08n62li4tp41xd` (`dispense_instruction_id`),
-  ADD KEY `FKtn6ygqbsgvy4aan6vhdcor2nu` (`user_id`),
-  ADD KEY `FKf7v60s8xthtuqxw9nnud4wfnf` (`product_item_id`);
-
---
--- Chỉ mục cho bảng `user_news_interactions`
---
-ALTER TABLE `user_news_interactions`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `FKnwx3trc1fnawwofdugamsshbl` (`article_id`),
-  ADD KEY `FKnnnrc539o3ogkp37dg6b4acs8` (`user_id`);
-
---
--- Chỉ mục cho bảng `user_symptom_reports`
---
-ALTER TABLE `user_symptom_reports`
-  ADD PRIMARY KEY (`id`),
-  ADD KEY `FKc1ofdoqfa5gfjr24gv7u13csj` (`symptom_id`),
-  ADD KEY `FKljga2nkpr5nevb46jgm5v6620` (`user_id`);
-
---
--- AUTO_INCREMENT cho các bảng đã đổ
---
-
---
--- AUTO_INCREMENT cho bảng `allergen_categories`
---
-ALTER TABLE `allergen_categories`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `app_users`
---
-ALTER TABLE `app_users`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=155468012;
-
---
--- AUTO_INCREMENT cho bảng `blockchain_config`
---
-ALTER TABLE `blockchain_config`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=8;
-
---
--- AUTO_INCREMENT cho bảng `blockchain_events`
---
-ALTER TABLE `blockchain_events`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=4;
-
---
--- AUTO_INCREMENT cho bảng `blockchain_transactions`
---
-ALTER TABLE `blockchain_transactions`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=147;
-
---
--- AUTO_INCREMENT cho bảng `disease_categories`
---
-ALTER TABLE `disease_categories`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `dispense_instructions`
---
-ALTER TABLE `dispense_instructions`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=4;
-
---
--- AUTO_INCREMENT cho bảng `distributors`
---
-ALTER TABLE `distributors`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `distributor_inventory`
---
-ALTER TABLE `distributor_inventory`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=10;
-
---
--- AUTO_INCREMENT cho bảng `drug_batches`
---
-ALTER TABLE `drug_batches`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=101;
-
---
--- AUTO_INCREMENT cho bảng `drug_products`
---
-ALTER TABLE `drug_products`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=65;
-
---
--- AUTO_INCREMENT cho bảng `drug_shipments`
---
-ALTER TABLE `drug_shipments`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=67;
-
---
--- AUTO_INCREMENT cho bảng `drug_verification_records`
---
-ALTER TABLE `drug_verification_records`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `inventory_movements`
---
-ALTER TABLE `inventory_movements`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=4;
-
---
--- AUTO_INCREMENT cho bảng `medical_specialties`
---
-ALTER TABLE `medical_specialties`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `medications`
---
-ALTER TABLE `medications`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `medication_reminders`
---
-ALTER TABLE `medication_reminders`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=443;
-
---
--- AUTO_INCREMENT cho bảng `ml_model_performance`
---
-ALTER TABLE `ml_model_performance`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `news_articles`
---
-ALTER TABLE `news_articles`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `ownership_history`
---
-ALTER TABLE `ownership_history`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=7;
-
---
--- AUTO_INCREMENT cho bảng `pharmacy_inventory`
---
-ALTER TABLE `pharmacy_inventory`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=10;
-
---
--- AUTO_INCREMENT cho bảng `pharmacy_users`
---
-ALTER TABLE `pharmacy_users`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
-
---
--- AUTO_INCREMENT cho bảng `pharma_companies`
---
-ALTER TABLE `pharma_companies`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=7;
-
---
--- AUTO_INCREMENT cho bảng `product_items`
---
-ALTER TABLE `product_items`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=521;
-
---
--- AUTO_INCREMENT cho bảng `product_item_movements`
---
-ALTER TABLE `product_item_movements`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=509;
-
---
--- AUTO_INCREMENT cho bảng `product_item_verifications`
---
-ALTER TABLE `product_item_verifications`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=205;
-
---
--- AUTO_INCREMENT cho bảng `provinces`
---
-ALTER TABLE `provinces`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `symptoms`
---
-ALTER TABLE `symptoms`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `user_allergies`
---
-ALTER TABLE `user_allergies`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `user_analytics`
---
-ALTER TABLE `user_analytics`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `user_blockchain_addresses`
---
-ALTER TABLE `user_blockchain_addresses`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `user_chronic_diseases`
---
-ALTER TABLE `user_chronic_diseases`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `user_demographics`
---
-ALTER TABLE `user_demographics`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `user_family_history`
---
-ALTER TABLE `user_family_history`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `user_lifestyle`
---
-ALTER TABLE `user_lifestyle`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `user_medications`
---
-ALTER TABLE `user_medications`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `user_medication_records`
---
-ALTER TABLE `user_medication_records`
-  MODIFY `id` bigint(20) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=30;
-
---
--- AUTO_INCREMENT cho bảng `user_news_interactions`
---
-ALTER TABLE `user_news_interactions`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
--- AUTO_INCREMENT cho bảng `user_symptom_reports`
---
-ALTER TABLE `user_symptom_reports`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
--- Các ràng buộc cho các bảng đã đổ
---
-
---
--- Các ràng buộc cho bảng `blockchain_transactions`
---
-ALTER TABLE `blockchain_transactions`
-  ADD CONSTRAINT `FK1xwa92xkjqy4m4w86qt9frq0p` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`),
-  ADD CONSTRAINT `FKthjbaitcky21e87g7k64ixmyu` FOREIGN KEY (`shipment_id`) REFERENCES `drug_shipments` (`id`);
-
---
--- Các ràng buộc cho bảng `disease_categories`
---
-ALTER TABLE `disease_categories`
-  ADD CONSTRAINT `FKs57ajxig1nh76dtsynjj424yn` FOREIGN KEY (`specialty_id`) REFERENCES `medical_specialties` (`id`);
-
---
--- Các ràng buộc cho bảng `dispense_instructions`
---
-ALTER TABLE `dispense_instructions`
-  ADD CONSTRAINT `FK71iej3cfeq289mji8fodpx7r7` FOREIGN KEY (`customer_app_user_id`) REFERENCES `app_users` (`id`),
-  ADD CONSTRAINT `FKcv89b3tglirm3lxbdrevl79qx` FOREIGN KEY (`product_item_id`) REFERENCES `product_items` (`id`);
-
---
--- Các ràng buộc cho bảng `distributor_inventory`
---
-ALTER TABLE `distributor_inventory`
-  ADD CONSTRAINT `fk_dist_inv_batch` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`) ON DELETE CASCADE,
-  ADD CONSTRAINT `fk_dist_inv_distributor` FOREIGN KEY (`distributor_id`) REFERENCES `pharma_companies` (`id`) ON DELETE CASCADE,
-  ADD CONSTRAINT `fk_dist_inv_received_from` FOREIGN KEY (`received_from_company_id`) REFERENCES `pharma_companies` (`id`) ON DELETE SET NULL,
-  ADD CONSTRAINT `fk_dist_inv_shipment` FOREIGN KEY (`received_shipment_id`) REFERENCES `drug_shipments` (`id`) ON DELETE SET NULL;
-
---
--- Các ràng buộc cho bảng `drug_products`
---
-ALTER TABLE `drug_products`
-  ADD CONSTRAINT `drug_products_ibfk_1` FOREIGN KEY (`manufacturer_id`) REFERENCES `pharma_companies` (`id`);
-
---
--- Các ràng buộc cho bảng `drug_shipments`
---
-ALTER TABLE `drug_shipments`
-  ADD CONSTRAINT `FK62vjipmxnoneo3nstux5d7492` FOREIGN KEY (`from_company_id`) REFERENCES `pharma_companies` (`id`),
-  ADD CONSTRAINT `FKg2b8lwl3cf30c3yumc4bm2jo0` FOREIGN KEY (`to_company_id`) REFERENCES `pharma_companies` (`id`),
-  ADD CONSTRAINT `FKijrigymbgnkf344fc6dv25swr` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`),
-  ADD CONSTRAINT `fk_drug_shipments_batch` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`) ON UPDATE CASCADE;
-
---
--- Các ràng buộc cho bảng `drug_verification_records`
---
-ALTER TABLE `drug_verification_records`
-  ADD CONSTRAINT `drug_verification_records_ibfk_1` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`),
-  ADD CONSTRAINT `drug_verification_records_ibfk_2` FOREIGN KEY (`verified_by_company_id`) REFERENCES `pharma_companies` (`id`);
-
---
--- Các ràng buộc cho bảng `inventory_movements`
---
-ALTER TABLE `inventory_movements`
-  ADD CONSTRAINT `fk_inv_mov_shipment` FOREIGN KEY (`related_shipment_id`) REFERENCES `drug_shipments` (`id`) ON DELETE SET NULL;
-
---
--- Các ràng buộc cho bảng `medical_specialties`
---
-ALTER TABLE `medical_specialties`
-  ADD CONSTRAINT `FKopvnsmewctm3u4tb8y86mnwss` FOREIGN KEY (`parent_specialty_id`) REFERENCES `medical_specialties` (`id`);
-
---
--- Các ràng buộc cho bảng `medication_reminders`
---
-ALTER TABLE `medication_reminders`
-  ADD CONSTRAINT `FK75mil2vo3q2yxwo8jpnya2wjy` FOREIGN KEY (`record_id`) REFERENCES `user_medication_records` (`id`);
-
---
--- Các ràng buộc cho bảng `news_articles`
---
-ALTER TABLE `news_articles`
-  ADD CONSTRAINT `FKke29j5hkg9i08d4a8lhb48q6p` FOREIGN KEY (`primary_category_id`) REFERENCES `medical_specialties` (`id`);
-
---
--- Các ràng buộc cho bảng `ownership_history`
---
-ALTER TABLE `ownership_history`
-  ADD CONSTRAINT `ownership_history_ibfk_1` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`),
-  ADD CONSTRAINT `ownership_history_ibfk_2` FOREIGN KEY (`from_company_id`) REFERENCES `pharma_companies` (`id`),
-  ADD CONSTRAINT `ownership_history_ibfk_3` FOREIGN KEY (`to_company_id`) REFERENCES `pharma_companies` (`id`);
-
---
--- Các ràng buộc cho bảng `pharmacy_inventory`
---
-ALTER TABLE `pharmacy_inventory`
-  ADD CONSTRAINT `fk_pharm_inv_batch` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`) ON DELETE CASCADE,
-  ADD CONSTRAINT `fk_pharm_inv_distributor` FOREIGN KEY (`received_from_distributor_id`) REFERENCES `pharma_companies` (`id`) ON DELETE SET NULL,
-  ADD CONSTRAINT `fk_pharm_inv_pharmacy` FOREIGN KEY (`pharmacy_id`) REFERENCES `pharma_companies` (`id`) ON DELETE CASCADE,
-  ADD CONSTRAINT `fk_pharm_inv_shipment` FOREIGN KEY (`received_shipment_id`) REFERENCES `drug_shipments` (`id`) ON DELETE SET NULL;
-
---
--- Các ràng buộc cho bảng `product_items`
---
-ALTER TABLE `product_items`
-  ADD CONSTRAINT `fk_product_items_batch` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`) ON UPDATE CASCADE,
-  ADD CONSTRAINT `fk_product_items_product` FOREIGN KEY (`drug_product_id`) REFERENCES `drug_products` (`id`) ON UPDATE CASCADE;
-
---
--- Các ràng buộc cho bảng `product_item_movements`
---
-ALTER TABLE `product_item_movements`
-  ADD CONSTRAINT `fk_movements_batch` FOREIGN KEY (`batch_id`) REFERENCES `drug_batches` (`id`) ON UPDATE CASCADE,
-  ADD CONSTRAINT `fk_movements_item` FOREIGN KEY (`item_id`) REFERENCES `product_items` (`id`) ON UPDATE CASCADE,
-  ADD CONSTRAINT `fk_movements_shipment` FOREIGN KEY (`shipment_id`) REFERENCES `drug_shipments` (`id`) ON DELETE SET NULL ON UPDATE CASCADE;
-
---
--- Các ràng buộc cho bảng `product_item_verifications`
---
-ALTER TABLE `product_item_verifications`
-  ADD CONSTRAINT `fk_verifications_item` FOREIGN KEY (`item_id`) REFERENCES `product_items` (`id`) ON UPDATE CASCADE;
-
---
--- Các ràng buộc cho bảng `user_allergies`
---
-ALTER TABLE `user_allergies`
-  ADD CONSTRAINT `FK4mclrynvl1em11jh8sxt5s74k` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
-  ADD CONSTRAINT `FKe9l0g417v7f5a0x7mlgd8nef6` FOREIGN KEY (`allergen_id`) REFERENCES `allergen_categories` (`id`);
-
---
--- Các ràng buộc cho bảng `user_analytics`
---
-ALTER TABLE `user_analytics`
-  ADD CONSTRAINT `FKs410q6f29i1omwuogxe0jf8cp` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`);
-
---
--- Các ràng buộc cho bảng `user_chronic_diseases`
---
-ALTER TABLE `user_chronic_diseases`
-  ADD CONSTRAINT `FK7bbk7fm509ihkwc721bigrhc2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
-  ADD CONSTRAINT `FK8vrsx37q69dypyauw2ofhdglk` FOREIGN KEY (`disease_id`) REFERENCES `disease_categories` (`id`);
-
---
--- Các ràng buộc cho bảng `user_demographics`
---
-ALTER TABLE `user_demographics`
-  ADD CONSTRAINT `FK6oi5c2vx6uwx787h2dh42tds0` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
-  ADD CONSTRAINT `FKgtdim7lin9k4ksae3rlai3423` FOREIGN KEY (`province_id`) REFERENCES `provinces` (`id`);
-
---
--- Các ràng buộc cho bảng `user_family_history`
---
-ALTER TABLE `user_family_history`
-  ADD CONSTRAINT `FK5j07xbkwg6ar194tpu0pnjc1u` FOREIGN KEY (`cause_of_death`) REFERENCES `disease_categories` (`id`),
-  ADD CONSTRAINT `FK5kfo8kst0cfl6bn3jnqnkaya3` FOREIGN KEY (`disease_id`) REFERENCES `disease_categories` (`id`),
-  ADD CONSTRAINT `FKo72n0klmcu5t03ubdrqg1erlg` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`);
-
---
--- Các ràng buộc cho bảng `user_lifestyle`
---
-ALTER TABLE `user_lifestyle`
-  ADD CONSTRAINT `FK1oq3d9ckvuvqhvcwqat4yt96q` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`);
-
---
--- Các ràng buộc cho bảng `user_medications`
---
-ALTER TABLE `user_medications`
-  ADD CONSTRAINT `FK19lmjhtt7n8cqs1csr37kxe3t` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
-  ADD CONSTRAINT `FKqdnk12od7cjg3denr5poygql8` FOREIGN KEY (`medication_id`) REFERENCES `medications` (`id`);
-
---
--- Các ràng buộc cho bảng `user_medication_records`
---
-ALTER TABLE `user_medication_records`
-  ADD CONSTRAINT `FKf7v60s8xthtuqxw9nnud4wfnf` FOREIGN KEY (`product_item_id`) REFERENCES `product_items` (`id`),
-  ADD CONSTRAINT `FKpb1evaoa70h08n62li4tp41xd` FOREIGN KEY (`dispense_instruction_id`) REFERENCES `dispense_instructions` (`id`);
-
---
--- Các ràng buộc cho bảng `user_news_interactions`
---
-ALTER TABLE `user_news_interactions`
-  ADD CONSTRAINT `FKnnnrc539o3ogkp37dg6b4acs8` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
-  ADD CONSTRAINT `FKnwx3trc1fnawwofdugamsshbl` FOREIGN KEY (`article_id`) REFERENCES `news_articles` (`id`);
-
---
--- Các ràng buộc cho bảng `user_symptom_reports`
---
-ALTER TABLE `user_symptom_reports`
-  ADD CONSTRAINT `FKc1ofdoqfa5gfjr24gv7u13csj` FOREIGN KEY (`symptom_id`) REFERENCES `symptoms` (`id`),
-  ADD CONSTRAINT `FKljga2nkpr5nevb46jgm5v6620` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`);
-COMMIT;
-
+/*!50001 DROP VIEW IF EXISTS `v_shipment_history`*/;
+SET @saved_cs_client     = @@character_set_client;
+/*!50503 SET character_set_client = utf8mb4 */;
+/*!50001 CREATE VIEW `v_shipment_history` AS SELECT 
+ 1 AS `shipment_code`,
+ 1 AS `batch_id`,
+ 1 AS `drug_name`,
+ 1 AS `batch_number`,
+ 1 AS `from_company`,
+ 1 AS `to_company`,
+ 1 AS `quantity`,
+ 1 AS `shipment_status`,
+ 1 AS `shipment_date`,
+ 1 AS `expected_delivery_date`,
+ 1 AS `actual_delivery_date`*/;
+SET character_set_client = @saved_cs_client;
+
+--
+-- Final view structure for view `v_batch_status`
+--
+
+/*!50001 DROP VIEW IF EXISTS `v_batch_status`*/;
+/*!50001 SET @saved_cs_client          = @@character_set_client */;
+/*!50001 SET @saved_cs_results         = @@character_set_results */;
+/*!50001 SET @saved_col_connection     = @@collation_connection */;
+/*!50001 SET character_set_client      = utf8mb4 */;
+/*!50001 SET character_set_results     = utf8mb4 */;
+/*!50001 SET collation_connection      = utf8mb4_0900_ai_ci */;
+/*!50001 CREATE ALGORITHM=UNDEFINED */
+/*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
+/*!50001 VIEW `v_batch_status` AS select `db`.`batch_id` AS `batch_id`,`db`.`drug_name` AS `drug_name`,`db`.`batch_number` AS `batch_number`,`db`.`manufacturer` AS `manufacturer`,`db`.`quantity` AS `quantity`,`db`.`status` AS `status`,`db`.`expiry_date` AS `expiry_date`,(case when (`db`.`expiry_date` < now()) then 'EXPIRED' when ((to_days(`db`.`expiry_date`) - to_days(now())) <= 90) then 'EXPIRING_SOON' else 'VALID' end) AS `validity_status`,`pc`.`name` AS `current_owner_name` from (`drug_batches` `db` left join `pharma_companies` `pc` on((`db`.`current_owner` = `pc`.`wallet_address`))) */;
+/*!50001 SET character_set_client      = @saved_cs_client */;
+/*!50001 SET character_set_results     = @saved_cs_results */;
+/*!50001 SET collation_connection      = @saved_col_connection */;
+
+--
+-- Final view structure for view `v_blockchain_overview`
+--
+
+/*!50001 DROP VIEW IF EXISTS `v_blockchain_overview`*/;
+/*!50001 SET @saved_cs_client          = @@character_set_client */;
+/*!50001 SET @saved_cs_results         = @@character_set_results */;
+/*!50001 SET @saved_col_connection     = @@collation_connection */;
+/*!50001 SET character_set_client      = utf8mb4 */;
+/*!50001 SET character_set_results     = utf8mb4 */;
+/*!50001 SET collation_connection      = utf8mb4_0900_ai_ci */;
+/*!50001 CREATE ALGORITHM=UNDEFINED */
+/*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
+/*!50001 VIEW `v_blockchain_overview` AS select `bt`.`transaction_hash` AS `transaction_hash`,`bt`.`function_name` AS `function_name`,`bt`.`from_address` AS `from_address`,`bt`.`to_address` AS `to_address`,`bt`.`status` AS `status`,`bt`.`gas_used` AS `gas_used`,`bt`.`timestamp` AS `timestamp`,`db`.`drug_name` AS `batch_drug_name`,`ds`.`shipment_code` AS `shipment_code` from ((`blockchain_transactions` `bt` left join `drug_batches` `db` on((`bt`.`batch_id` = `db`.`id`))) left join `drug_shipments` `ds` on((`bt`.`shipment_id` = `ds`.`id`))) order by `bt`.`timestamp` desc */;
+/*!50001 SET character_set_client      = @saved_cs_client */;
+/*!50001 SET character_set_results     = @saved_cs_results */;
+/*!50001 SET collation_connection      = @saved_col_connection */;
+
+--
+-- Final view structure for view `v_company_users`
+--
+
+/*!50001 DROP VIEW IF EXISTS `v_company_users`*/;
+/*!50001 SET @saved_cs_client          = @@character_set_client */;
+/*!50001 SET @saved_cs_results         = @@character_set_results */;
+/*!50001 SET @saved_col_connection     = @@collation_connection */;
+/*!50001 SET character_set_client      = utf8mb4 */;
+/*!50001 SET character_set_results     = utf8mb4 */;
+/*!50001 SET collation_connection      = utf8mb4_0900_ai_ci */;
+/*!50001 CREATE ALGORITHM=UNDEFINED */
+/*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
+/*!50001 VIEW `v_company_users` AS select `pc`.`id` AS `company_id`,`pc`.`name` AS `company_name`,`pc`.`company_type` AS `company_type`,`pc`.`wallet_address` AS `wallet_address`,`pc`.`license_number` AS `license_number`,coalesce(`du`.`email`,`mu`.`email`) AS `user_email`,coalesce(`du`.`name`,`mu`.`name`) AS `user_name`,(case when (`du`.`id` is not null) then 'DISTRIBUTOR' when (`mu`.`id` is not null) then 'MANUFACTURER' else NULL end) AS `user_type` from ((`pharma_companies` `pc` left join `distributor_users` `du` on((`pc`.`wallet_address` = `du`.`wallet_address`))) left join `manufacturer_users` `mu` on((`pc`.`wallet_address` = `mu`.`wallet_address`))) */;
+/*!50001 SET character_set_client      = @saved_cs_client */;
+/*!50001 SET character_set_results     = @saved_cs_results */;
+/*!50001 SET collation_connection      = @saved_col_connection */;
+
+--
+-- Final view structure for view `v_distributor_inventory_full`
+--
+
+/*!50001 DROP VIEW IF EXISTS `v_distributor_inventory_full`*/;
+/*!50001 SET @saved_cs_client          = @@character_set_client */;
+/*!50001 SET @saved_cs_results         = @@character_set_results */;
+/*!50001 SET @saved_col_connection     = @@collation_connection */;
+/*!50001 SET character_set_client      = utf8mb4 */;
+/*!50001 SET character_set_results     = utf8mb4 */;
+/*!50001 SET collation_connection      = utf8mb4_0900_ai_ci */;
+/*!50001 CREATE ALGORITHM=UNDEFINED */
+/*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
+/*!50001 VIEW `v_distributor_inventory_full` AS select `di`.`id` AS `id`,`di`.`distributor_id` AS `distributor_id`,`di`.`batch_id` AS `batch_id`,`di`.`drug_name` AS `drug_name`,`di`.`manufacturer` AS `manufacturer`,`di`.`batch_number` AS `batch_number`,`di`.`quantity` AS `quantity`,`di`.`reserved_quantity` AS `reserved_quantity`,`di`.`available_quantity` AS `available_quantity`,`di`.`manufacture_date` AS `manufacture_date`,`di`.`expiry_date` AS `expiry_date`,`di`.`qr_code` AS `qr_code`,`di`.`warehouse_location` AS `warehouse_location`,`di`.`storage_conditions` AS `storage_conditions`,`di`.`storage_temperature` AS `storage_temperature`,`di`.`unit_price` AS `unit_price`,`di`.`selling_price` AS `selling_price`,`di`.`total_value` AS `total_value`,`di`.`status` AS `status`,`di`.`min_stock_level` AS `min_stock_level`,`di`.`max_stock_level` AS `max_stock_level`,`di`.`blockchain_batch_id` AS `blockchain_batch_id`,`di`.`receive_tx_hash` AS `receive_tx_hash`,`di`.`current_owner_address` AS `current_owner_address`,`di`.`received_from_company_id` AS `received_from_company_id`,`di`.`received_shipment_id` AS `received_shipment_id`,`di`.`received_date` AS `received_date`,`di`.`received_quantity` AS `received_quantity`,`di`.`created_at` AS `created_at`,`di`.`updated_at` AS `updated_at`,`di`.`created_by` AS `created_by`,`di`.`updated_by` AS `updated_by`,`di`.`notes` AS `notes`,`pc`.`name` AS `distributor_name`,`pc`.`wallet_address` AS `distributor_wallet`,`db`.`status` AS `batch_status`,`db`.`manufacturer_address` AS `manufacturer_address`,(to_days(`di`.`expiry_date`) - to_days(now())) AS `days_to_expiry`,(case when (`di`.`available_quantity` <= `di`.`min_stock_level`) then 'NEED_REORDER' when ((to_days(`di`.`expiry_date`) - to_days(now())) <= 30) then 'EXPIRING_SOON' else 'NORMAL' end) AS `alert_status` from ((`distributor_inventory` `di` join `pharma_companies` `pc` on((`di`.`distributor_id` = `pc`.`id`))) join `drug_batches` `db` on((`di`.`batch_id` = `db`.`id`))) where (`pc`.`company_type` = 'DISTRIBUTOR') */;
+/*!50001 SET character_set_client      = @saved_cs_client */;
+/*!50001 SET character_set_results     = @saved_cs_results */;
+/*!50001 SET collation_connection      = @saved_col_connection */;
+
+--
+-- Final view structure for view `v_item_movement_summary`
+--
+
+/*!50001 DROP VIEW IF EXISTS `v_item_movement_summary`*/;
+/*!50001 SET @saved_cs_client          = @@character_set_client */;
+/*!50001 SET @saved_cs_results         = @@character_set_results */;
+/*!50001 SET @saved_col_connection     = @@collation_connection */;
+/*!50001 SET character_set_client      = utf8mb4 */;
+/*!50001 SET character_set_results     = utf8mb4 */;
+/*!50001 SET collation_connection      = utf8mb4_0900_ai_ci */;
+/*!50001 CREATE ALGORITHM=UNDEFINED */
+/*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
+/*!50001 VIEW `v_item_movement_summary` AS select `pi`.`id` AS `item_id`,`pi`.`item_code` AS `item_code`,`pi`.`current_status` AS `current_status`,count(`pim`.`id`) AS `total_movements`,min(`pim`.`movement_timestamp`) AS `first_movement`,max(`pim`.`movement_timestamp`) AS `last_movement`,sum((case when (`pim`.`movement_type` = 'SHIP') then 1 else 0 end)) AS `ship_count`,sum((case when (`pim`.`movement_type` = 'RECEIVE') then 1 else 0 end)) AS `receive_count`,sum((case when (`pim`.`movement_type` = 'SALE') then 1 else 0 end)) AS `sale_count`,sum((case when (`pim`.`is_blockchain_synced` = 0x01) then 1 else 0 end)) AS `blockchain_synced_count` from (`product_items` `pi` left join `product_item_movements` `pim` on((`pi`.`id` = `pim`.`item_id`))) group by `pi`.`id`,`pi`.`item_code`,`pi`.`current_status` */;
+/*!50001 SET character_set_client      = @saved_cs_client */;
+/*!50001 SET character_set_results     = @saved_cs_results */;
+/*!50001 SET collation_connection      = @saved_col_connection */;
+
+--
+-- Final view structure for view `v_item_verification_summary`
+--
+
+/*!50001 DROP VIEW IF EXISTS `v_item_verification_summary`*/;
+/*!50001 SET @saved_cs_client          = @@character_set_client */;
+/*!50001 SET @saved_cs_results         = @@character_set_results */;
+/*!50001 SET @saved_col_connection     = @@collation_connection */;
+/*!50001 SET character_set_client      = utf8mb4 */;
+/*!50001 SET character_set_results     = utf8mb4 */;
+/*!50001 SET collation_connection      = utf8mb4_0900_ai_ci */;
+/*!50001 CREATE ALGORITHM=UNDEFINED */
+/*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
+/*!50001 VIEW `v_item_verification_summary` AS select `pi`.`id` AS `item_id`,`pi`.`item_code` AS `item_code`,`pi`.`current_status` AS `current_status`,count(`piv`.`id`) AS `total_scans`,sum((case when (`piv`.`scanner_type` = 'CONSUMER') then 1 else 0 end)) AS `consumer_scans`,sum((case when (`piv`.`scanner_type` = 'PHARMACY') then 1 else 0 end)) AS `pharmacy_scans`,sum((case when (`piv`.`scanner_type` = 'DISTRIBUTOR') then 1 else 0 end)) AS `distributor_scans`,sum((case when (`piv`.`verification_result` = 'AUTHENTIC') then 1 else 0 end)) AS `authentic_scans`,sum((case when (`piv`.`verification_result` = 'SUSPICIOUS') then 1 else 0 end)) AS `suspicious_scans`,min(`piv`.`scan_timestamp`) AS `first_scan`,max(`piv`.`scan_timestamp`) AS `last_scan` from (`product_items` `pi` left join `product_item_verifications` `piv` on((`pi`.`id` = `piv`.`item_id`))) group by `pi`.`id`,`pi`.`item_code`,`pi`.`current_status` */;
+/*!50001 SET character_set_client      = @saved_cs_client */;
+/*!50001 SET character_set_results     = @saved_cs_results */;
+/*!50001 SET collation_connection      = @saved_col_connection */;
+
+--
+-- Final view structure for view `v_pharmacy_inventory_full`
+--
+
+/*!50001 DROP VIEW IF EXISTS `v_pharmacy_inventory_full`*/;
+/*!50001 SET @saved_cs_client          = @@character_set_client */;
+/*!50001 SET @saved_cs_results         = @@character_set_results */;
+/*!50001 SET @saved_col_connection     = @@collation_connection */;
+/*!50001 SET character_set_client      = utf8mb4 */;
+/*!50001 SET character_set_results     = utf8mb4 */;
+/*!50001 SET collation_connection      = utf8mb4_0900_ai_ci */;
+/*!50001 CREATE ALGORITHM=UNDEFINED */
+/*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
+/*!50001 VIEW `v_pharmacy_inventory_full` AS select `pi`.`id` AS `id`,`pi`.`pharmacy_id` AS `pharmacy_id`,`pi`.`batch_id` AS `batch_id`,`pi`.`drug_name` AS `drug_name`,`pi`.`manufacturer` AS `manufacturer`,`pi`.`batch_number` AS `batch_number`,`pi`.`quantity` AS `quantity`,`pi`.`reserved_quantity` AS `reserved_quantity`,`pi`.`available_quantity` AS `available_quantity`,`pi`.`sold_quantity` AS `sold_quantity`,`pi`.`manufacture_date` AS `manufacture_date`,`pi`.`expiry_date` AS `expiry_date`,`pi`.`qr_code` AS `qr_code`,`pi`.`shelf_location` AS `shelf_location`,`pi`.`storage_conditions` AS `storage_conditions`,`pi`.`storage_temperature` AS `storage_temperature`,`pi`.`cost_price` AS `cost_price`,`pi`.`retail_price` AS `retail_price`,`pi`.`discount_price` AS `discount_price`,`pi`.`total_value` AS `total_value`,`pi`.`profit_margin` AS `profit_margin`,`pi`.`status` AS `status`,`pi`.`min_stock_level` AS `min_stock_level`,`pi`.`max_stock_level` AS `max_stock_level`,`pi`.`reorder_point` AS `reorder_point`,`pi`.`blockchain_batch_id` AS `blockchain_batch_id`,`pi`.`receive_tx_hash` AS `receive_tx_hash`,`pi`.`current_owner_address` AS `current_owner_address`,`pi`.`is_verified` AS `is_verified`,`pi`.`received_from_distributor_id` AS `received_from_distributor_id`,`pi`.`received_shipment_id` AS `received_shipment_id`,`pi`.`received_date` AS `received_date`,`pi`.`received_quantity` AS `received_quantity`,`pi`.`first_sale_date` AS `first_sale_date`,`pi`.`last_sale_date` AS `last_sale_date`,`pi`.`average_daily_sales` AS `average_daily_sales`,`pi`.`days_of_supply` AS `days_of_supply`,`pi`.`requires_prescription` AS `requires_prescription`,`pi`.`controlled_substance` AS `controlled_substance`,`pi`.`is_featured` AS `is_featured`,`pi`.`is_on_sale` AS `is_on_sale`,`pi`.`display_order` AS `display_order`,`pi`.`created_at` AS `created_at`,`pi`.`updated_at` AS `updated_at`,`pi`.`created_by` AS `created_by`,`pi`.`updated_by` AS `updated_by`,`pi`.`notes` AS `notes`,`pc`.`name` AS `pharmacy_name`,`pc`.`wallet_address` AS `pharmacy_wallet`,`pc`.`address` AS `pharmacy_address`,`db`.`status` AS `batch_status`,`db`.`manufacturer_address` AS `manufacturer_address`,(to_days(`pi`.`expiry_date`) - to_days(now())) AS `days_to_expiry`,(case when (`pi`.`available_quantity` <= 0) then 'OUT_OF_STOCK' when (`pi`.`available_quantity` <= `pi`.`reorder_point`) then 'NEED_REORDER' when ((to_days(`pi`.`expiry_date`) - to_days(now())) <= 30) then 'EXPIRING_SOON' else 'NORMAL' end) AS `alert_status` from ((`pharmacy_inventory` `pi` join `pharma_companies` `pc` on((`pi`.`pharmacy_id` = `pc`.`id`))) join `drug_batches` `db` on((`pi`.`batch_id` = `db`.`id`))) where (`pc`.`company_type` = 'PHARMACY') */;
+/*!50001 SET character_set_client      = @saved_cs_client */;
+/*!50001 SET character_set_results     = @saved_cs_results */;
+/*!50001 SET collation_connection      = @saved_col_connection */;
+
+--
+-- Final view structure for view `v_product_items_full`
+--
+
+/*!50001 DROP VIEW IF EXISTS `v_product_items_full`*/;
+/*!50001 SET @saved_cs_client          = @@character_set_client */;
+/*!50001 SET @saved_cs_results         = @@character_set_results */;
+/*!50001 SET @saved_col_connection     = @@collation_connection */;
+/*!50001 SET character_set_client      = utf8mb4 */;
+/*!50001 SET character_set_results     = utf8mb4 */;
+/*!50001 SET collation_connection      = utf8mb4_0900_ai_ci */;
+/*!50001 CREATE ALGORITHM=UNDEFINED */
+/*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
+/*!50001 VIEW `v_product_items_full` AS select `pi`.`id` AS `item_id`,`pi`.`item_code` AS `item_code`,`pi`.`current_status` AS `current_status`,`pi`.`current_owner_id` AS `current_owner_id`,`pi`.`current_owner_type` AS `current_owner_type`,`pi`.`qr_code_data` AS `qr_code_data`,`pi`.`manufacture_date` AS `item_manufacture_date`,`pi`.`expiry_date` AS `item_expiry_date`,`pi`.`is_blockchain_synced` AS `is_blockchain_synced`,`pi`.`created_at` AS `item_created_at`,`db`.`id` AS `batch_id`,`db`.`batch_number` AS `batch_number`,`db`.`batch_id` AS `blockchain_batch_id`,`db`.`quantity` AS `batch_quantity`,`db`.`status` AS `batch_status`,`db`.`manufacturer` AS `batch_manufacturer`,`db`.`storage_conditions` AS `storage_conditions`,`dp`.`id` AS `product_id`,`dp`.`name` AS `product_name`,`dp`.`active_ingredient` AS `active_ingredient`,`dp`.`dosage` AS `dosage`,`dp`.`dosage_form` AS `dosage_form`,`dp`.`category` AS `category`,`dp`.`manufacturer_id` AS `manufacturer_id`,`dp`.`registration_number` AS `registration_number`,`dp`.`description` AS `product_description`,(case when (`pi`.`expiry_date` < now()) then 'EXPIRED' when (`pi`.`expiry_date` < (now() + interval 3 month)) then 'EXPIRING_SOON' else 'VALID' end) AS `expiry_status`,(to_days(`pi`.`expiry_date`) - to_days(now())) AS `days_until_expiry` from ((`product_items` `pi` join `drug_batches` `db` on((`pi`.`batch_id` = `db`.`id`))) join `drug_products` `dp` on((`pi`.`drug_product_id` = `dp`.`id`))) */;
+/*!50001 SET character_set_client      = @saved_cs_client */;
+/*!50001 SET character_set_results     = @saved_cs_results */;
+/*!50001 SET collation_connection      = @saved_col_connection */;
+
+--
+-- Final view structure for view `v_shipment_history`
+--
+
+/*!50001 DROP VIEW IF EXISTS `v_shipment_history`*/;
+/*!50001 SET @saved_cs_client          = @@character_set_client */;
+/*!50001 SET @saved_cs_results         = @@character_set_results */;
+/*!50001 SET @saved_col_connection     = @@collation_connection */;
+/*!50001 SET character_set_client      = utf8mb4 */;
+/*!50001 SET character_set_results     = utf8mb4 */;
+/*!50001 SET collation_connection      = utf8mb4_0900_ai_ci */;
+/*!50001 CREATE ALGORITHM=UNDEFINED */
+/*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */
+/*!50001 VIEW `v_shipment_history` AS select `ds`.`shipment_code` AS `shipment_code`,`db`.`batch_id` AS `batch_id`,`db`.`drug_name` AS `drug_name`,`db`.`batch_number` AS `batch_number`,`fc`.`name` AS `from_company`,`tc`.`name` AS `to_company`,`ds`.`quantity` AS `quantity`,`ds`.`shipment_status` AS `shipment_status`,`ds`.`shipment_date` AS `shipment_date`,`ds`.`expected_delivery_date` AS `expected_delivery_date`,`ds`.`actual_delivery_date` AS `actual_delivery_date` from (((`drug_shipments` `ds` join `drug_batches` `db` on((`ds`.`batch_id` = `db`.`id`))) join `pharma_companies` `fc` on((`ds`.`from_company_id` = `fc`.`id`))) join `pharma_companies` `tc` on((`ds`.`to_company_id` = `tc`.`id`))) */;
+/*!50001 SET character_set_client      = @saved_cs_client */;
+/*!50001 SET character_set_results     = @saved_cs_results */;
+/*!50001 SET collation_connection      = @saved_col_connection */;
+/*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
+
+/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
+/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
 /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
 /*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+
+-- Dump completed on 2026-05-26 16:05:39
