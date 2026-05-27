@@ -93,11 +93,10 @@ public class AdminController {
                     boolean exists = txList.stream().anyMatch(tx -> event.getTransactionHash().equals(tx.get("fullHash")));
                     if (!exists) {
                         Map<String, Object> map = new HashMap<>();
-                        map.put("id", event.getTransactionHash().substring(0, 6) + "..." + event.getTransactionHash().substring(event.getTransactionHash().length() - 4));
+                        map.put("id", formatShortHash(event.getTransactionHash()));
                         map.put("fullHash", event.getTransactionHash());
                         map.put("type", event.getEventType());
-                        map.put("from", event.getFromAddress() != null && event.getFromAddress().length() > 6 ? 
-                                       event.getFromAddress().substring(0, 6) + "..." : "Blockchain");
+                        map.put("from", formatShortAddress(event.getFromAddress()));
                         map.put("status", "Success");
                         map.put("gas", "N/A");
                         map.put("time", "Block: " + event.getBlockNumber());
@@ -114,10 +113,10 @@ public class AdminController {
                     boolean exists = txList.stream().anyMatch(tx -> b.getTransactionHash().equals(tx.get("fullHash")));
                     if (!exists) {
                         Map<String, Object> map = new HashMap<>();
-                        map.put("id", b.getTransactionHash().substring(0, 6) + "..." + b.getTransactionHash().substring(b.getTransactionHash().length() - 4));
+                        map.put("id", formatShortHash(b.getTransactionHash()));
                         map.put("fullHash", b.getTransactionHash());
                         map.put("type", "Create Batch");
-                        map.put("from", b.getManufacturerAddress() != null ? b.getManufacturerAddress().substring(0, 6) + "..." : "System");
+                        map.put("from", formatShortAddress(b.getManufacturerAddress()));
                         map.put("status", "Success");
                         map.put("gas", "N/A");
                         map.put("time", b.getCreatedAt() != null ? b.getCreatedAt().toString().replace("T", " ") : "Vừa xong");
@@ -277,14 +276,10 @@ public class AdminController {
 
     private Map<String, Object> mapToTxMap(BlockchainTransaction tx) {
         Map<String, Object> map = new HashMap<>();
-        map.put("id", tx.getTransactionHash() != null ? 
-                     tx.getTransactionHash().substring(0, 6) + "..." + tx.getTransactionHash().substring(tx.getTransactionHash().length() - 4) 
-                     : "Pending...");
+        map.put("id", formatShortHash(tx.getTransactionHash()));
         map.put("fullHash", tx.getTransactionHash());
         map.put("type", tx.getFunctionName() != null ? tx.getFunctionName() : "Contract Interaction");
-        map.put("from", tx.getFromAddress() != null ? 
-                       tx.getFromAddress().substring(0, 6) + "..." + tx.getFromAddress().substring(tx.getFromAddress().length() - 4)
-                       : "System");
+        map.put("from", formatShortAddress(tx.getFromAddress()));
         String statusStr = "Unknown";
         if (tx.getStatus() != null) {
             switch (tx.getStatus()) {
@@ -300,5 +295,17 @@ public class AdminController {
         map.put("time", tx.getTimestamp() != null ? tx.getTimestamp().toString().replace("T", " ") : "Vừa xong");
         map.put("rawDate", tx.getTimestamp());
         return map;
+    }
+
+    private String formatShortHash(String hash) {
+        if (hash == null || hash.isEmpty()) return "Pending...";
+        if (hash.length() < 10) return hash;
+        return hash.substring(0, 6) + "..." + hash.substring(hash.length() - 4);
+    }
+
+    private String formatShortAddress(String address) {
+        if (address == null || address.isEmpty()) return "System";
+        if (address.length() < 10) return address;
+        return address.substring(0, 6) + "..." + address.substring(address.length() - 4);
     }
 }
