@@ -31,7 +31,7 @@ Hệ thống tích hợp công nghệ Blockchain giúp giám sát, kiểm địn
 1. **Node.js** (Phiên bản gợi ý: 18.x hoặc 20.x LTS)
 2. **Java JDK** (Phiên bản 17 hoặc 21 để chạy Spring Boot Backend)
 3. **Maven** (Đã được tích hợp sẵn qua file `mvnw.cmd` trong thư mục backend)
-4. **MySQL / MariaDB** (Đang chạy ở cổng mặc định `3306`)
+4. **MySQL / MariaDB** (Thông qua **XAMPP** hoặc cài đặt MySQL Server độc lập, chạy ở cổng `3306`)
 5. **Docker Desktop** (Nếu muốn chạy Blockscout Explorer để xem giao dịch blockchain trực quan)
 6. **Flutter SDK** (Nếu muốn chạy hoặc build app di động)
 
@@ -39,18 +39,31 @@ Hệ thống tích hợp công nghệ Blockchain giúp giám sát, kiểm địn
 
 ### II. Cấu Hình Ban Đầu (Setup)
 
-#### 1. Khởi tạo Cơ sở dữ liệu MySQL
-1. Mở MySQL Client (như Navicat, phpMyAdmin, DBeaver, hoặc MySQL CLI).
-2. Tạo một database mới tên là: `BlockChain_DA`.
-3. Import dữ liệu/cấu trúc bảng từ file backup có sẵn trong dự án:
-   * File đề xuất: `blockchain_da_latest.sql` hoặc `blockchain_da FULL.sql`.
+#### 1. Khởi tạo Cơ sở dữ liệu MySQL (Sử dụng XAMPP & phpMyAdmin)
+Nếu sử dụng **XAMPP** để chạy MySQL, hãy làm theo các bước sau:
+1. Mở ứng dụng **XAMPP Control Panel**.
+2. Nhấn nút **Start** ở dòng **MySQL** để khởi động cơ sở dữ liệu (chạy tại cổng mặc định `3306`).
+3. Nhấn nút **Admin** ở dòng MySQL hoặc truy cập vào trình duyệt địa chỉ: `http://localhost/phpmyadmin`.
+4. **Tạo Database mới**:
+   * Tại thanh menu bên trái phpMyAdmin, click vào **New** (Mới).
+   * Ô tên Cơ sở dữ liệu điền: **`BlockChain_DA`**.
+   * Phần bảng mã (collation) chọn: `utf8mb4_general_ci` hoặc `utf8_general_ci`.
+   * Nhấn nút **Create** (Tạo).
+5. **Import dữ liệu**:
+   * Click chọn database `BlockChain_DA` vừa tạo ở cột bên trái.
+   * Chọn tab **Import** (Nhập) ở menu phía trên.
+   * Nhấn nút **Choose File** (Chọn tệp) và trỏ tới file backup SQL trong thư mục dự án (khuyên dùng file `blockchain_da_latest.sql` hoặc `blockchain_da FULL.sql`).
+   * Kéo xuống dưới cùng và nhấn **Import / Go** (Nhập / Thực hiện) để hoàn tất.
 
 #### 2. Cấu hình file `application.properties` (Backend)
-Vào thư mục `backend/src/main/resources/application.properties` chỉnh sửa thông tin kết nối database nếu cần:
-```properties
-spring.datasource.username=root
-spring.datasource.password=mật_khẩu_mysql_của_bạn
-```
+Vào thư mục `backend/src/main/resources/application.properties` chỉnh sửa thông tin kết nối database:
+* Nếu sử dụng **XAMPP mặc định**, tài khoản kết nối sẽ là:
+  ```properties
+  spring.datasource.username=root
+  spring.datasource.password=
+  ```
+  *(Mật khẩu để trống, trùng khớp hoàn toàn với cấu hình mặc định của XAMPP)*
+* Nếu bạn đặt mật khẩu riêng cho tài khoản root trong XAMPP, hãy điền mật khẩu đó vào sau dấu `=`.
 
 #### 3. Cài đặt các Dependency (Node Modules)
 Mở CMD hoặc PowerShell tại thư mục gốc của dự án và chạy các lệnh cài đặt sau:
