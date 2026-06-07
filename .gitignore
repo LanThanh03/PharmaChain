@@ -76,3 +76,18 @@ scripts/deployments/
 
 # Backend Uploads
 backend/uploads/
+
+# Ignore images, diagrams, archives, and PDFs
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.drawio
+*.drawio.xml
+*.pdf
+*.zip
+*.rar
+!web/favicon.png
+!web/icons/*.png
+!android/app/src/main/res/mipmap-*/*.png
