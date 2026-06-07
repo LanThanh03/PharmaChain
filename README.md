@@ -44,16 +44,11 @@ Nếu sử dụng **XAMPP** để chạy MySQL, hãy làm theo các bước sau:
 1. Mở ứng dụng **XAMPP Control Panel**.
 2. Nhấn nút **Start** ở dòng **MySQL** để khởi động cơ sở dữ liệu (chạy tại cổng mặc định `3306`).
 3. Nhấn nút **Admin** ở dòng MySQL hoặc truy cập vào trình duyệt địa chỉ: `http://localhost/phpmyadmin`.
-4. **Tạo Database mới**:
-   * Tại thanh menu bên trái phpMyAdmin, click vào **New** (Mới).
-   * Ô tên Cơ sở dữ liệu điền: **`BlockChain_DA`**.
-   * Phần bảng mã (collation) chọn: `utf8mb4_general_ci` hoặc `utf8_general_ci`.
-   * Nhấn nút **Create** (Tạo).
-5. **Import dữ liệu**:
-   * Click chọn database `BlockChain_DA` vừa tạo ở cột bên trái.
-   * Chọn tab **Import** (Nhập) ở menu phía trên.
-   * Nhấn nút **Choose File** (Chọn tệp) và trỏ tới file backup SQL trong thư mục dự án (khuyên dùng file `blockchain_da_latest.sql` hoặc `blockchain_da FULL.sql`).
-   * Kéo xuống dưới cùng và nhấn **Import / Go** (Nhập / Thực hiện) để hoàn tất.
+4. **Import dữ liệu (Tự động tạo Database)**:
+   * Ngay tại trang chủ của phpMyAdmin (không cần chọn hay tạo trước database nào cả), nhấn chọn tab **Import** (Nhập) ở thanh menu phía trên.
+   * Nhấn nút **Choose File** (Chọn tệp) và trỏ tới file backup SQL trong thư mục dự án (file `blockchain_da_latest.sql` hoặc `blockchain_da FULL.sql`).
+   * Kéo xuống dưới cùng và nhấn **Import / Go** (Nhập / Thực hiện).
+   * *Hệ thống đã được cấu hình sẵn để tự động khởi tạo cơ sở dữ liệu `BlockChain_DA` và nạp toàn bộ cấu trúc bảng cùng dữ liệu mẫu.*
 
 #### 2. Cấu hình file `application.properties` (Backend)
 Vào thư mục `backend/src/main/resources/application.properties` chỉnh sửa thông tin kết nối database:
